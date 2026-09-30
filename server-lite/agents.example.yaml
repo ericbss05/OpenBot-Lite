@@ -1,0 +1,9 @@
+# Copiez vers agents.yaml et adaptez. Chargé au démarrage et fusionné avec la base.
+agents:
+  - id: general
+    name: General Assistant
+    title: Assistant
+    roleDescription: Aide générale au quotidien.
+    visibility: public
+    # endpoint AG-UI (obligatoire en Lite — pas de Bot embarqué CopilotKit)
+    endpoint: http://127.0.0.1:8080/ag-ui

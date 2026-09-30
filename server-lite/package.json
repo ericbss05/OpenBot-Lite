@@ -1,0 +1,33 @@
+{
+  "name": "openbot-server-lite",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --env-file=.env --watch src/index.ts",
+    "start": "bun --env-file=.env src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@better-auth/drizzle-adapter": "^1.7.6",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "better-auth": "^1.7.6",
+    "cel-js": "^0.8.2",
+    "cron-parser": "^5",
+    "drizzle-orm": "^0.45.3",
+    "hono": "^4.10.0",
+    "pg": "^8.23.0",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^26.6.3",
+    "@types/pg": "^8.23.1",
+    "dotenv": "^18.0.4",
+    "drizzle-kit": "^0.31.11",
+    "typescript": "^5.9.2"
+  }
+}
