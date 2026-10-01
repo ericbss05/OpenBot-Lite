@@ -12,12 +12,14 @@
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "^1.7.6",
+    "@composio/core": "^0.22.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "better-auth": "^1.7.6",
     "cel-js": "^0.8.2",
     "cron-parser": "^5",
     "drizzle-orm": "^0.45.3",
     "hono": "^4.10.0",
+    "openai": "^7.25.0",
     "pg": "^8.23.0",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
