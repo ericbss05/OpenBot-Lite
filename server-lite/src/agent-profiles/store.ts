@@ -4,7 +4,7 @@ import {
   readFileSync,
 } from "node:fs";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
@@ -32,16 +32,17 @@ const createSchema = z.object({
 
   title: z.string().optional(),
 
-  roleDescription:
-    z.string().optional(),
+  roleDescription: z.string().optional(),
 
   visibility: z.enum([
     "public",
     "private",
   ]),
 
-  endpoint:
-    z.string().url().optional(),
+  endpoint: z
+    .string()
+    .url()
+    .optional(),
 
   avatarPalette: z
     .number()
@@ -54,21 +55,38 @@ const createSchema = z.object({
 });
 
 const updateSchema = z.object({
-  name: z.string().min(1).optional(),
-
-  title: z.string().min(1).optional(),
-
-  roleDescription:
-    z.string().min(1).optional(),
-
-  model: z.string().min(1).optional(),
-
-  visibility: z
-    .enum(["public", "private"])
+  name: z
+    .string()
+    .min(1)
     .optional(),
 
-  endpoint:
-    z.string().url().optional(),
+  title: z
+    .string()
+    .nullable()
+    .optional(),
+
+  roleDescription: z
+    .string()
+    .nullable()
+    .optional(),
+
+  model: z
+    .string()
+    .min(1)
+    .optional(),
+
+  visibility: z
+    .enum([
+      "public",
+      "private",
+    ])
+    .optional(),
+
+  endpoint: z
+    .string()
+    .url()
+    .nullable()
+    .optional(),
 
   avatarPalette: z
     .number()
@@ -87,381 +105,511 @@ export function createAgentStore(
   db: Db,
   allowPrivateHosts: boolean,
 ) {
-  return {
-    /**
-     * List agents owned by a user.
-     */
-    async list(
-      ownerUserId: string,
-    ): Promise<AgentProfile[]> {
-      const rows =
-        await db
-          .select()
-          .from(agentProfiles)
-          .where(
+  function validateEndpoint(
+    endpoint: string,
+  ): string {
+    const verdict =
+      checkAgentEndpoint(
+        endpoint,
+        allowPrivateHosts,
+      );
+
+    if (!verdict.allowed) {
+      throw new Error(
+        verdict.reason,
+      );
+    }
+
+    return verdict.url;
+  }
+
+  async function list(
+    ownerUserId: string,
+  ): Promise<AgentProfile[]> {
+    const rows =
+      await db
+        .select()
+        .from(agentProfiles)
+        .where(
+          eq(
+            agentProfiles.ownerUserId,
+            ownerUserId,
+          ),
+        );
+
+    return rows.map(mapRow);
+  }
+
+  async function get(
+    id: string,
+  ): Promise<AgentProfile | null> {
+    const rows =
+      await db
+        .select()
+        .from(agentProfiles)
+        .where(
+          eq(
+            agentProfiles.id,
+            id,
+          ),
+        )
+        .limit(1);
+
+    return rows[0]
+      ? mapRow(rows[0])
+      : null;
+  }
+
+  async function getOwned(
+    id: string,
+    ownerUserId: string,
+  ): Promise<AgentProfile | null> {
+    const rows =
+      await db
+        .select()
+        .from(agentProfiles)
+        .where(
+          and(
+            eq(
+              agentProfiles.id,
+              id,
+            ),
             eq(
               agentProfiles.ownerUserId,
               ownerUserId,
             ),
-          );
+          ),
+        )
+        .limit(1);
 
-      return rows.map(mapRow);
-    },
+    return rows[0]
+      ? mapRow(rows[0])
+      : null;
+  }
 
-    /**
-     * Get one agent by id.
-     *
-     * Ownership is checked at the HTTP route level
-     * when the request comes from a user.
-     */
-    async get(
-      id: string,
-    ): Promise<AgentProfile | null> {
-      const rows =
-        await db
-          .select()
-          .from(agentProfiles)
-          .where(
+  async function create(
+    input: z.infer<
+      typeof createSchema
+    >,
+    ownerUserId: string,
+  ): Promise<AgentProfile> {
+    const parsed =
+      createSchema.parse(input);
+
+    const endpoint =
+      parsed.endpoint
+        ? validateEndpoint(
+            parsed.endpoint,
+          )
+        : null;
+
+    const row = {
+      id: randomUUID(),
+
+      name: parsed.name,
+
+      title:
+        parsed.title ?? null,
+
+      roleDescription:
+        parsed.roleDescription ??
+        null,
+
+      model: "gpt-6-luna",
+
+      visibility:
+        "private" as const,
+
+      endpoint,
+
+      avatarPalette:
+        parsed.avatarPalette ?? 0,
+
+      avatarReversed:
+        parsed.avatarReversed ??
+        false,
+
+      ownerUserId,
+
+      createdAt: new Date(),
+    };
+
+    await db
+      .insert(agentProfiles)
+      .values(row);
+
+    return mapRow(row);
+  }
+
+  async function update(
+    id: string,
+    input: z.infer<
+      typeof updateSchema
+    >,
+  ): Promise<AgentProfile | null> {
+    const parsed =
+      updateSchema.parse(input);
+
+    const existing =
+      await get(id);
+
+    if (!existing) {
+      return null;
+    }
+
+    const endpoint =
+      resolveEndpoint(
+        parsed.endpoint,
+        existing.endpoint,
+        allowPrivateHosts
+      );
+
+    const [row] =
+      await db
+        .update(agentProfiles)
+        .set({
+          ...(parsed.name !==
+            undefined && {
+            name: parsed.name,
+          }),
+
+          ...(parsed.title !==
+            undefined && {
+            title: parsed.title,
+          }),
+
+          ...(parsed.roleDescription !==
+            undefined && {
+            roleDescription:
+              parsed.roleDescription,
+          }),
+
+          ...(parsed.model !==
+            undefined && {
+            model: parsed.model,
+          }),
+
+          ...(parsed.visibility !==
+            undefined && {
+            visibility:
+              parsed.visibility,
+          }),
+
+          ...(parsed.endpoint !==
+            undefined && {
+            endpoint,
+          }),
+
+          ...(parsed.avatarPalette !==
+            undefined && {
+            avatarPalette:
+              parsed.avatarPalette,
+          }),
+
+          ...(parsed.avatarReversed !==
+            undefined && {
+            avatarReversed:
+              parsed.avatarReversed,
+          }),
+        })
+        .where(
+          eq(
+            agentProfiles.id,
+            id,
+          ),
+        )
+        .returning();
+
+    return row
+      ? mapRow(row)
+      : null;
+  }
+
+  async function updateOwned(
+    id: string,
+    ownerUserId: string,
+    input: z.infer<
+      typeof updateSchema
+    >,
+  ): Promise<AgentProfile | null> {
+    const parsed =
+      updateSchema.parse(input);
+
+    const existing =
+      await getOwned(
+        id,
+        ownerUserId,
+      );
+
+    if (!existing) {
+      return null;
+    }
+
+    const endpoint =
+      resolveEndpoint(
+        parsed.endpoint,
+        existing.endpoint,
+        allowPrivateHosts
+      );
+
+    const [row] =
+      await db
+        .update(agentProfiles)
+        .set({
+          ...(parsed.name !==
+            undefined && {
+            name: parsed.name,
+          }),
+
+          ...(parsed.title !==
+            undefined && {
+            title: parsed.title,
+          }),
+
+          ...(parsed.roleDescription !==
+            undefined && {
+            roleDescription:
+              parsed.roleDescription,
+          }),
+
+          ...(parsed.model !==
+            undefined && {
+            model: parsed.model,
+          }),
+
+          ...(parsed.visibility !==
+            undefined && {
+            visibility:
+              parsed.visibility,
+          }),
+
+          ...(parsed.endpoint !==
+            undefined && {
+            endpoint,
+          }),
+
+          ...(parsed.avatarPalette !==
+            undefined && {
+            avatarPalette:
+              parsed.avatarPalette,
+          }),
+
+          ...(parsed.avatarReversed !==
+            undefined && {
+            avatarReversed:
+              parsed.avatarReversed,
+          }),
+        })
+        .where(
+          and(
             eq(
               agentProfiles.id,
               id,
             ),
-          )
-          .limit(1);
+            eq(
+              agentProfiles.ownerUserId,
+              ownerUserId,
+            ),
+          ),
+        )
+        .returning();
 
-      return rows[0]
-        ? mapRow(rows[0])
-        : null;
-    },
+    return row
+      ? mapRow(row)
+      : null;
+  }
 
-    /**
-     * Create a new agent.
-     *
-     * New agents are private and owned by the
-     * authenticated user.
-     */
-    async create(
-      input: z.infer<
-        typeof createSchema
-      >,
-      ownerUserId: string,
-    ): Promise<AgentProfile> {
-      const parsed =
-        createSchema.parse(input);
+  async function remove(
+    id: string,
+  ): Promise<boolean> {
+    const result =
+      await db
+        .delete(agentProfiles)
+        .where(
+          eq(
+            agentProfiles.id,
+            id,
+          ),
+        )
+        .returning({
+          id: agentProfiles.id,
+        });
 
-      let endpoint: string | null =
-        null;
+    return result.length > 0;
+  }
 
-      if (parsed.endpoint) {
-        const verdict =
-          checkAgentEndpoint(
-            parsed.endpoint,
-            allowPrivateHosts,
-          );
+  async function deleteOwned(
+    id: string,
+    ownerUserId: string,
+  ): Promise<boolean> {
+    const result =
+      await db
+        .delete(agentProfiles)
+        .where(
+          and(
+            eq(
+              agentProfiles.id,
+              id,
+            ),
+            eq(
+              agentProfiles.ownerUserId,
+              ownerUserId,
+            ),
+          ),
+        )
+        .returning({
+          id: agentProfiles.id,
+        });
 
-        if (!verdict.allowed) {
-          throw new Error(
-            verdict.reason,
-          );
-        }
+    return result.length > 0;
+  }
 
-        endpoint = verdict.url;
-      }
+  async function syncFromYaml(
+    path: string,
+  ) {
+    if (!existsSync(path)) {
+      return;
+    }
 
-      const id = randomUUID();
-
-      const row = {
-        id,
-
-        name: parsed.name,
-
-        title:
-          parsed.title ?? null,
-
-        roleDescription:
-          parsed.roleDescription ??
-          null,
-
-        model: "gpt-6-luna",
-
-        visibility:
-          "private" as const,
-
-        endpoint,
-
-        avatarPalette:
-          parsed.avatarPalette ?? 0,
-
-        avatarReversed:
-          parsed.avatarReversed ??
-          false,
-
-        ownerUserId,
-
-        createdAt: new Date(),
+    const doc =
+      parseYaml(
+        readFileSync(
+          path,
+          "utf8",
+        ),
+      ) as {
+        agents?: Array<{
+          id: string;
+          name: string;
+          title: string;
+          roleDescription: string;
+          visibility:
+            | "public"
+            | "private";
+          endpoint?: string;
+          model?: string;
+        }>;
       };
 
-      await db
-        .insert(agentProfiles)
-        .values(row);
-
-      return mapRow(row);
-    },
-
-    /**
-     * Update an existing agent.
-     */
-    async update(
-      id: string,
-      input: z.infer<
-        typeof updateSchema
-      >,
-    ): Promise<AgentProfile | null> {
-      const parsed =
-        updateSchema.parse(input);
-
+    for (const agent of
+      doc.agents ?? []) {
       const existing =
-        await db
-          .select()
-          .from(agentProfiles)
-          .where(
-            eq(
-              agentProfiles.id,
-              id,
-            ),
-          )
-          .limit(1);
+        await get(agent.id);
 
-      if (!existing[0]) {
-        return null;
-      }
+      let endpoint:
+        | string
+        | null = null;
 
-      const current =
-        mapRow(existing[0]);
-
-      let endpoint =
-        current.endpoint;
-
-      if (parsed.endpoint) {
-        const verdict =
-          checkAgentEndpoint(
-            parsed.endpoint,
-            allowPrivateHosts,
-          );
-
-        if (!verdict.allowed) {
-          throw new Error(
-            verdict.reason,
-          );
+      if (agent.endpoint) {
+        try {
+          endpoint =
+            validateEndpoint(
+              agent.endpoint,
+            );
+        } catch {
+          continue;
         }
-
-        endpoint = verdict.url;
       }
 
-      const [row] =
+      if (existing) {
         await db
           .update(agentProfiles)
           .set({
-            ...(parsed.name !==
-              undefined && {
-              name: parsed.name,
-            }),
+            name: agent.name,
 
-            ...(parsed.title !==
-              undefined && {
-              title: parsed.title,
-            }),
+            title: agent.title,
 
-            ...(parsed.roleDescription !==
-              undefined && {
-              roleDescription:
-                parsed.roleDescription,
-            }),
+            roleDescription:
+              agent.roleDescription,
 
-            ...(parsed.model !==
-              undefined && {
-              model: parsed.model,
-            }),
+            visibility:
+              agent.visibility,
 
-            ...(parsed.visibility !==
-              undefined && {
-              visibility:
-                parsed.visibility,
-            }),
+            endpoint,
 
-            ...(parsed.endpoint !==
-              undefined && {
-              endpoint,
-            }),
-
-            ...(parsed.avatarPalette !==
-              undefined && {
-              avatarPalette:
-                parsed.avatarPalette,
-            }),
-
-            ...(parsed.avatarReversed !==
-              undefined && {
-              avatarReversed:
-                parsed.avatarReversed,
-            }),
+            model:
+              agent.model ??
+              "gpt-6-luna",
           })
           .where(
             eq(
               agentProfiles.id,
-              id,
+              agent.id,
             ),
-          )
-          .returning();
-
-      return row
-        ? mapRow(row)
-        : null;
-    },
-
-    /**
-     * Delete an agent.
-     */
-    async delete(
-      id: string,
-    ): Promise<boolean> {
-      const result =
+          );
+      } else {
         await db
-          .delete(agentProfiles)
-          .where(
-            eq(
-              agentProfiles.id,
-              id,
-            ),
-          )
-          .returning({
-            id: agentProfiles.id,
-          });
+          .insert(agentProfiles)
+          .values({
+            id: agent.id,
 
-      return result.length > 0;
-    },
+            name: agent.name,
 
-    /**
-     * Synchronize agents from YAML.
-     */
-    async syncFromYaml(
-      path: string,
-    ) {
-      if (!existsSync(path)) {
-        return;
-      }
+            title: agent.title,
 
-      const doc =
-        parseYaml(
-          readFileSync(
-            path,
-            "utf8",
-          ),
-        ) as {
-          agents?: Array<{
-            id: string;
-            name: string;
-            title: string;
-            roleDescription: string;
+            roleDescription:
+              agent.roleDescription,
+
+            model:
+              agent.model ??
+              "gpt-6-luna",
+
             visibility:
-              | "public"
-              | "private";
-            endpoint?: string;
-            model?: string;
-          }>;
-        };
+              agent.visibility,
 
-      for (const a of
-        doc.agents ?? []) {
-        const existing =
-          await db
-            .select()
-            .from(agentProfiles)
-            .where(
-              eq(
-                agentProfiles.id,
-                a.id,
-              ),
-            )
-            .limit(1);
+            endpoint,
 
-        let endpoint: string | null =
-          null;
+            avatarPalette: 0,
 
-        if (a.endpoint) {
-          const verdict =
-            checkAgentEndpoint(
-              a.endpoint,
-              allowPrivateHosts,
-            );
+            avatarReversed: false,
 
-          if (!verdict.allowed) {
-            continue;
-          }
+            ownerUserId: null,
 
-          endpoint = verdict.url;
-        }
-
-        if (existing[0]) {
-          await db
-            .update(agentProfiles)
-            .set({
-              name: a.name,
-
-              title: a.title,
-
-              roleDescription:
-                a.roleDescription,
-
-              visibility:
-                a.visibility,
-
-              endpoint,
-
-              model:
-                a.model ??
-                "gpt-6-luna",
-            })
-            .where(
-              eq(
-                agentProfiles.id,
-                a.id,
-              ),
-            );
-        } else {
-          await db
-            .insert(agentProfiles)
-            .values({
-              id: a.id,
-
-              name: a.name,
-
-              title: a.title,
-
-              roleDescription:
-                a.roleDescription,
-
-              model:
-                a.model ??
-                "gpt-6-luna",
-
-              visibility:
-                a.visibility,
-
-              endpoint,
-
-              avatarPalette: 0,
-
-              avatarReversed: false,
-
-              ownerUserId: null,
-
-              createdAt: new Date(),
-            });
-        }
+            createdAt: new Date(),
+          });
       }
-    },
+    }
+  }
+
+  return {
+    list,
+    get,
+    getOwned,
+    create,
+    update,
+    updateOwned,
+    delete: remove,
+    deleteOwned,
+    syncFromYaml,
   };
+}
+
+function resolveEndpoint(
+  value: string | null | undefined,
+  current: string | null,
+  allowPrivateHosts: boolean,
+): string | null {
+  if (value === undefined) {
+    return current;
+  }
+
+  if (value === null) {
+    return null;
+  }
+
+  const verdict =
+    checkAgentEndpoint(
+      value,
+      allowPrivateHosts,
+    );
+
+  if (!verdict.allowed) {
+    throw new Error(
+      verdict.reason,
+    );
+  }
+
+  return verdict.url;
 }
 
 function mapRow(

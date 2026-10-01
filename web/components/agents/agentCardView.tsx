@@ -1,9 +1,3 @@
-/**
- * 📁 Emplacement : components/agents/agentCardView.tsx
- * ♻️ Réutilisable (domaine agents) — rendu visuel pur d'une carte d'agent (sans lien),
- * utilisé par la liste ET par l'aperçu en direct du formulaire.
- */
-
 import type { ReactNode } from "react";
 
 import { AgentAvatar } from "@/components/agents/agentAvatar";
@@ -24,9 +18,13 @@ type AgentCardViewProps = {
   hasEndpoint?: boolean;
   palette: number;
   reversed: boolean;
+
   /** Affiche des textes d'exemple quand le nom / la description sont vides. */
   placeholder?: boolean;
+
+  /** Contenu d'action affiché dans le footer. */
   footer?: ReactNode;
+
   className?: string;
 };
 
@@ -43,14 +41,24 @@ export function AgentCardView({
   className,
 }: AgentCardViewProps) {
   const emptyName = !name && placeholder;
-  const displayName = name || (emptyName ? "Untitled agent" : "");
+
+  const displayName =
+    name || (emptyName ? "Untitled agent" : "");
+
   const displayDescription =
     description ||
-    (placeholder ? "The instructions you write will appear here." : "");
+    (placeholder
+      ? "The instructions you write will appear here."
+      : "");
 
   return (
-    <Card className={cn("gap-0 rounded-2xl py-5", className)}>
-      <CardHeader className="flex flex-row items-start gap-4 px-5">
+    <Card
+      className={cn(
+        "gap-0 overflow-hidden rounded-2xl py-0",
+        className,
+      )}
+    >
+      <CardHeader className="flex flex-row items-start gap-4 px-5 pt-5">
         <div className="shrink-0 overflow-hidden rounded-xl">
           <AgentAvatar
             agentId="preview"
@@ -69,6 +77,7 @@ export function AgentCardView({
           >
             {displayName}
           </h2>
+
           {title && (
             <p className="mt-1 truncate text-sm text-muted-foreground">
               {title}
@@ -77,7 +86,7 @@ export function AgentCardView({
         </div>
       </CardHeader>
 
-      <CardContent className="px-5">
+      <CardContent className="px-5 pb-5">
         {displayDescription && (
           <p className="mt-5 line-clamp-3 text-sm leading-6 text-muted-foreground">
             {displayDescription}
@@ -85,8 +94,16 @@ export function AgentCardView({
         )}
 
         <div className="mt-5 flex flex-wrap items-center gap-2">
-          <Badge variant="secondary">Private</Badge>
-          {model && <Badge variant="secondary">{model}</Badge>}
+          <Badge variant="secondary">
+            Private
+          </Badge>
+
+          {model && (
+            <Badge variant="secondary">
+              {model}
+            </Badge>
+          )}
+
           {hasEndpoint && (
             <Badge className="bg-emerald-50 text-emerald-700 hover:bg-emerald-50">
               Endpoint
@@ -96,7 +113,12 @@ export function AgentCardView({
       </CardContent>
 
       {footer && (
-        <CardFooter className="mx-5 mt-5 justify-between border-t px-0 pt-4">
+        <CardFooter
+          className={cn(
+            "border-t px-4 py-4",
+            "flex items-center justify-between gap-4",
+          )}
+        >
           {footer}
         </CardFooter>
       )}
