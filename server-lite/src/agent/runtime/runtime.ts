@@ -6,14 +6,17 @@ import type {
 import type { AgentEventSink } from "../events/events";
 import type { LLMProvider } from "../llm/provider";
 import { ToolRegistry } from "../tools/tools";
+import type { GatewayExecutor } from "../../gateway/executor";
 import { RuntimeLoop } from "./loop";
 import type { RuntimeState } from "./state";
 
 export interface AgentRuntimeDependencies {
   llm: LLMProvider;
   tools: ToolRegistry;
+  gateway: GatewayExecutor;
   approvals?: ApprovalStore;
   events?: AgentEventSink;
+  actorId?: string;
 }
 
 export class AgentRuntime {
@@ -23,7 +26,10 @@ export class AgentRuntime {
     private readonly dependencies: AgentRuntimeDependencies,
     private readonly maxTurns = 10,
   ) {
-    this.loop = new RuntimeLoop(dependencies);
+    this.loop =
+      new RuntimeLoop(
+        dependencies,
+      );
   }
 
   /**
@@ -35,7 +41,9 @@ export class AgentRuntime {
   ): Promise<RuntimeState> {
     const state: RuntimeState = {
       runId: crypto.randomUUID(),
+
       agent,
+
       status: "pending",
 
       messages: [
@@ -46,22 +54,28 @@ export class AgentRuntime {
       ],
 
       turn: 0,
-      maxTurns: this.maxTurns,
+
+      maxTurns:
+        this.maxTurns,
 
       toolResults: [],
     };
 
-    return this.loop.run(state);
+    return this.loop.run(
+      state,
+    );
   }
 
   /**
-   * Reprend un run interrompu par une demande d'approbation.
+   * Reprend un run après approval.
    */
   async resume(
     state: RuntimeState,
     decision: ApprovalDecision,
   ): Promise<RuntimeState> {
-    if (state.status !== "waiting") {
+    if (
+      state.status !== "waiting"
+    ) {
       throw new Error(
         `Cannot resume runtime from status: ${state.status}`,
       );
@@ -71,25 +85,44 @@ export class AgentRuntime {
       !state.pendingApprovalId ||
       !this.dependencies.approvals
     ) {
-      throw new Error("No pending approval");
+      throw new Error(
+        "No pending approval",
+      );
     }
 
-    if (!state.pendingToolCall) {
-      throw new Error("No pending tool call");
+    if (
+      !state.pendingToolCall
+    ) {
+      throw new Error(
+        "No pending tool call",
+      );
     }
 
-    const approvalId = state.pendingApprovalId;
+    const approvalId =
+      state.pendingApprovalId;
 
     await this.dependencies.approvals.decide(
       approvalId,
       decision,
     );
 
-    if (decision === "rejected") {
+    // --------------------------------------------------
+    // Rejet
+    // --------------------------------------------------
+
+    if (
+      decision === "rejected"
+    ) {
       state.status = "failed";
-      state.error = "Tool execution rejected";
-      state.pendingApprovalId = undefined;
-      state.pendingToolCall = undefined;
+
+      state.error =
+        "Tool execution rejected";
+
+      state.pendingApprovalId =
+        undefined;
+
+      state.pendingToolCall =
+        undefined;
 
       await this.dependencies.events?.emit({
         type: "agent.failed",
@@ -100,31 +133,40 @@ export class AgentRuntime {
       return state;
     }
 
+    // --------------------------------------------------
+    // Vérification de la décision
+    // --------------------------------------------------
+
     const storedDecision =
       await this.dependencies.approvals.getDecision(
         approvalId,
       );
 
-    if (storedDecision !== "approved") {
-      throw new Error("Approval was not approved");
+    if (
+      storedDecision !== "approved"
+    ) {
+      throw new Error(
+        "Approval was not approved",
+      );
     }
 
-    /**
-     * L'approbation est validée.
-     *
-     * Le tool call reste disponible dans state.pendingToolCall
-     * jusqu'à ce que le RuntimeLoop le reprenne.
-     */
-    state.pendingApprovalId = undefined;
-    state.status = "running";
+    state.pendingApprovalId =
+      undefined;
 
-    return this.loop.run(state);
+    state.status =
+      "running";
+
+    return this.loop.run(
+      state,
+    );
   }
 
   /**
    * Annule un run.
    */
-  cancel(state: RuntimeState): RuntimeState {
+  cancel(
+    state: RuntimeState,
+  ): RuntimeState {
     if (
       state.status === "completed" ||
       state.status === "failed" ||
@@ -133,9 +175,14 @@ export class AgentRuntime {
       return state;
     }
 
-    state.status = "cancelled";
-    state.pendingApprovalId = undefined;
-    state.pendingToolCall = undefined;
+    state.status =
+      "cancelled";
+
+    state.pendingApprovalId =
+      undefined;
+
+    state.pendingToolCall =
+      undefined;
 
     return state;
   }
