@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { checkAgentEndpoint } from "../src/agents/endpoint-check";
+import { checkAgentEndpoint } from "../src/agent-profiles/endpoint-check";
 
 describe("endpoint check", () => {
   test("blocks metadata IP", () => {

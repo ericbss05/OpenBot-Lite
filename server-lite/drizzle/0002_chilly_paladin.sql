@@ -1,0 +1,1 @@
+ALTER TABLE "agent_profiles" ADD COLUMN "model" text DEFAULT 'gpt-6-luna' NOT NULL;

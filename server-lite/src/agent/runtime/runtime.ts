@@ -1,4 +1,3 @@
-import type { Agent } from "../agent";
 import type {
   ApprovalDecision,
   ApprovalStore,
@@ -7,15 +6,23 @@ import type { AgentEventSink } from "../events/events";
 import type { LLMProvider } from "../llm/provider";
 import { ToolRegistry } from "../tools/tools";
 import type { GatewayExecutor } from "../../gateway/executor";
+import type { AgentStore } from "../store";
 import { RuntimeLoop } from "./loop";
 import type { RuntimeState } from "./state";
 
 export interface AgentRuntimeDependencies {
   llm: LLMProvider;
+
   tools: ToolRegistry;
+
   gateway: GatewayExecutor;
+
+  agents: AgentStore;
+
   approvals?: ApprovalStore;
+
   events?: AgentEventSink;
+
   actorId?: string;
 }
 
@@ -24,6 +31,7 @@ export class AgentRuntime {
 
   constructor(
     private readonly dependencies: AgentRuntimeDependencies,
+
     private readonly maxTurns = 10,
   ) {
     this.loop =
@@ -33,12 +41,27 @@ export class AgentRuntime {
   }
 
   /**
-   * Démarre un nouveau run.
+   * Démarre un nouveau run à partir
+   * de l'identifiant d'un agent.
+   *
+   * L'agent est chargé depuis l'AgentStore,
+   * puis transmis au RuntimeLoop.
    */
   async run(
-    agent: Agent,
+    agentId: string,
     message: string,
   ): Promise<RuntimeState> {
+    const agent =
+      await this.dependencies.agents.get(
+        agentId,
+      );
+
+    if (!agent) {
+      throw new Error(
+        `Agent not found: ${agentId}`,
+      );
+    }
+
     const state: RuntimeState = {
       runId: crypto.randomUUID(),
 
@@ -67,7 +90,8 @@ export class AgentRuntime {
   }
 
   /**
-   * Reprend un run après approval.
+   * Reprend un run après une demande
+   * d'approbation.
    */
   async resume(
     state: RuntimeState,
@@ -82,8 +106,7 @@ export class AgentRuntime {
     }
 
     if (
-      !state.pendingApprovalId ||
-      !this.dependencies.approvals
+      !state.pendingApprovalId
     ) {
       throw new Error(
         "No pending approval",
@@ -95,6 +118,14 @@ export class AgentRuntime {
     ) {
       throw new Error(
         "No pending tool call",
+      );
+    }
+
+    if (
+      !this.dependencies.approvals
+    ) {
+      throw new Error(
+        "ApprovalStore is not configured.",
       );
     }
 
@@ -113,7 +144,8 @@ export class AgentRuntime {
     if (
       decision === "rejected"
     ) {
-      state.status = "failed";
+      state.status =
+        "failed";
 
       state.error =
         "Tool execution rejected";

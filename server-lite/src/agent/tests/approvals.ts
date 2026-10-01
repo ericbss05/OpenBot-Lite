@@ -1,15 +1,4 @@
-/**
- * Test : interruption d'un agent sur une action sensible,
- * approbation, reprise et exécution.
- *
- * Lancer :
- *   bun run src/agent/tests/approvals.ts
- */
-
-import type { Agent } from "../agent";
-import { OpenAIProvider } from "../llm/openai";
-import { AgentRuntime } from "../runtime/runtime";
-import { ToolRegistry } from "../tools/tools";
+import { db } from "../../db";
 
 import type {
   ApprovalDecision,
@@ -17,12 +6,30 @@ import type {
   ApprovalStore,
 } from "../approvals/approvals";
 
+import { createAgentStore } from "../store";
+import { OpenAIProvider } from "../llm/openai";
+import { AgentRuntime } from "../runtime/runtime";
+import { ToolRegistry } from "../tools/tools";
+
 import { currentTimeTool } from "../tools/internal/current-time";
 import { textAnalyzerTool } from "../tools/internal/text-analyzer";
 import { searchMemoryTool } from "../tools/internal/search-memory";
 import { createSubAgentTool } from "../tools/internal/create-sub-agent";
 
 import { createTestGateway } from "./helpers/test-gateway";
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+const AGENT_ID =
+  process.env.TEST_AGENT_ID ??
+  "test-agent";
+
+const MODEL =
+  process.env.TEST_MODEL ??
+  process.env.OPENAI_MODEL ??
+  "gpt-6-luna";
 
 // ---------------------------------------------------------------------------
 // In-memory approval store
@@ -121,51 +128,6 @@ function buildRegistry(): ToolRegistry {
 }
 
 // ---------------------------------------------------------------------------
-// Agent
-// ---------------------------------------------------------------------------
-
-function buildAgent(): Agent {
-  return {
-    id: "approval-test-agent",
-
-    name:
-      "Approval Test Agent",
-
-    model:
-      process.env.TEST_MODEL ??
-      process.env.OPENAI_MODEL ??
-      "gpt-6-luna",
-
-    instructions: `
-Tu es un agent capable d'utiliser des outils.
-
-Tu dois accomplir entièrement la mission.
-
-Lorsqu'une action nécessite une approbation,
-le système interrompra temporairement ton exécution.
-
-Une fois l'action approuvée, continue la mission
-et exécute l'action.
-
-Ne demande jamais à l'utilisateur de réaliser
-l'action lui-même.
-
-Après l'exécution des outils nécessaires,
-donne une réponse finale claire.
-    `.trim(),
-
-    tools: [
-      "current_time",
-      "text_analyzer",
-      "search_memory",
-      "create_sub_agent",
-    ],
-
-    subAgents: [],
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -182,21 +144,104 @@ async function main(): Promise<void> {
     "============================================================\n",
   );
 
+  // -------------------------------------------------------------------------
+  // DB → AgentStore
+  // -------------------------------------------------------------------------
+
+  const baseAgentStore =
+    createAgentStore(db);
+
+  const loadedAgent =
+    await baseAgentStore.get(
+      AGENT_ID,
+    );
+
+  if (!loadedAgent) {
+    console.error(
+      `❌ Agent "${AGENT_ID}" introuvable dans PostgreSQL.`,
+    );
+
+    console.error("");
+
+    console.error(
+      "Crée d'abord l'agent de test avec :",
+    );
+
+    console.error(
+      "bun run src/db/seed-test-agent.ts",
+    );
+
+    process.exit(1);
+  }
+
+  // -------------------------------------------------------------------------
+  // Tools
+  // -------------------------------------------------------------------------
+
   const registry =
     buildRegistry();
 
-  const approvals =
-    new InMemoryApprovalStore();
+  /*
+   * Les tools ne sont pas encore persistés dans agentProfiles.
+   *
+   * On garde donc la DB comme source de vérité pour l'agent,
+   * mais on enrichit temporairement l'agent de test avec les
+   * tools nécessaires à ce scénario.
+   *
+   * Cette partie disparaîtra lorsque la configuration des tools
+   * sera persistée en DB.
+   */
+  const agents = {
+    async get(agentId: string) {
+      const agent =
+        await baseAgentStore.get(
+          agentId,
+        );
+
+      if (!agent) {
+        return null;
+      }
+
+      return {
+        ...agent,
+
+        model: MODEL,
+
+        tools: [
+          "current_time",
+          "text_analyzer",
+          "search_memory",
+          "create_sub_agent",
+        ],
+      };
+    },
+  };
+
+  // -------------------------------------------------------------------------
+  // Gateway
+  // -------------------------------------------------------------------------
 
   const gateway =
     createTestGateway(
       registry,
     );
 
+  // -------------------------------------------------------------------------
+  // Approval store
+  // -------------------------------------------------------------------------
+
+  const approvals =
+    new InMemoryApprovalStore();
+
+  // -------------------------------------------------------------------------
+  // LLM
+  // -------------------------------------------------------------------------
+
   let llm: OpenAIProvider;
 
   try {
-    llm = new OpenAIProvider();
+    llm =
+      new OpenAIProvider();
   } catch (error) {
     console.error(
       `❌ ${
@@ -213,19 +258,31 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // -------------------------------------------------------------------------
+  // Runtime
+  // -------------------------------------------------------------------------
+
   const runtime =
     new AgentRuntime(
       {
         llm,
-        tools: registry,
+
+        tools:
+          registry,
+
         approvals,
+
         gateway,
+
+        agents,
       },
+
       10,
     );
 
-  const agent =
-    buildAgent();
+  // -------------------------------------------------------------------------
+  // Mission
+  // -------------------------------------------------------------------------
 
   const mission = `
 Crée un sous-agent spécialisé dans l'analyse de textes.
@@ -244,11 +301,24 @@ Ne me demande pas de réaliser l'action à ta place.
   `.trim();
 
   console.log(
-    `Modèle       : ${agent.model}`,
+    `Agent        : ${loadedAgent.id}`,
   );
 
   console.log(
-    `Outils       : ${agent.tools.join(", ")}`,
+    `Nom          : ${loadedAgent.name}`,
+  );
+
+  console.log(
+    `Modèle       : ${MODEL}`,
+  );
+
+  console.log(
+    `Outils       : ${[
+      "current_time",
+      "text_analyzer",
+      "search_memory",
+      "create_sub_agent",
+    ].join(", ")}`,
   );
 
   console.log(
@@ -271,7 +341,7 @@ Ne me demande pas de réaliser l'action à ta place.
 
   const initialState =
     await runtime.run(
-      agent,
+      AGENT_ID,
       mission,
     );
 
@@ -512,7 +582,10 @@ Ne me demande pas de réaliser l'action à ta place.
     );
 
     console.log(
-      `Erreur : ${createdTool.error ?? "inconnue"}`,
+      `Erreur : ${
+        createdTool.error ??
+        "inconnue"
+      }`,
     );
 
     process.exit(1);

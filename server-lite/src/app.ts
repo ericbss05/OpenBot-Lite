@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
-import type { AgentStore } from "./agents/store";
+import type { AgentStore } from "./agent-profiles/store";
 import { auth } from "./auth/auth";
 import type { AppVariables, createAuthMiddleware } from "./auth/guards";
 import { requireUser } from "./auth/guards";
@@ -67,8 +67,12 @@ export function createApp(deps: {
   });
 
   app.get("/api/agents", async (c) => {
-    return c.json(await deps.agents.list());
-  });
+  const user = requireUser(c);
+
+  return c.json(
+    await deps.agents.list(user.id),
+  );
+});
 
   app.post("/api/agents", async (c) => {
     const user = requireUser(c);

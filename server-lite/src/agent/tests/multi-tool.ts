@@ -1,27 +1,17 @@
-/**
- * Test : l'agent sait-il accomplir une tâche nécessitant plusieurs outils ?
- *
- * Lancer :
- *   bun run src/agent/tests/multi-tool.ts
- *
- * Variables :
- *   OPENAI_API_KEY  clé OpenAI
- *   TEST_MODEL      modèle (défaut : gpt-6-luna)
- *   RUNS            nombre d'essais (défaut : 1)
- *   MAX_TURNS       nombre maximum de tours (défaut : 10)
- *
- * Le prompt ne donne volontairement pas les noms des tools.
- */
+import { db } from "../../db";
 
-import type { Agent } from "../agent";
 import { OpenAIProvider } from "../llm/openai";
+
 import { AgentRuntime } from "../runtime/runtime";
+
 import { ToolRegistry } from "../tools/tools";
 
 import { createSubAgentTool } from "../tools/internal/create-sub-agent";
 import { currentTimeTool } from "../tools/internal/current-time";
 import { searchMemoryTool } from "../tools/internal/search-memory";
 import { textAnalyzerTool } from "../tools/internal/text-analyzer";
+
+import { createAgentStore } from "../store";
 
 import { createTestGateway } from "./helpers/test-gateway";
 
@@ -32,6 +22,10 @@ import { createTestGateway } from "./helpers/test-gateway";
 const MODEL =
   process.env.TEST_MODEL ??
   "gpt-6-luna";
+
+const AGENT_ID =
+  process.env.TEST_AGENT_ID ??
+  "test-agent";
 
 const RUNS = Math.max(
   1,
@@ -79,9 +73,12 @@ const INTERNAL_TOOLS = [
 ];
 
 function buildRegistry(): ToolRegistry {
-  const registry = new ToolRegistry();
+  const registry =
+    new ToolRegistry();
 
-  for (const tool of INTERNAL_TOOLS) {
+  for (
+    const tool of INTERNAL_TOOLS
+  ) {
     registry.register(tool);
   }
 
@@ -109,16 +106,17 @@ interface RunOutcome {
 
 async function runOnce(
   runtime: AgentRuntime,
-  agent: Agent,
 ): Promise<RunOutcome> {
-  const state = await runtime.run(
-    agent,
-    MISSION,
-  );
+  const state =
+    await runtime.run(
+      AGENT_ID,
+      MISSION,
+    );
 
   const called =
     state.toolResults.map(
-      (result) => result.toolId,
+      (result) =>
+        result.toolId,
     );
 
   const uniqueTools = [
@@ -157,13 +155,25 @@ async function runOnce(
 
   return {
     passed,
+
     called,
+
     uniqueTools,
-    messages: state.messages.length,
-    turns: state.turn,
-    status: state.status,
-    result: state.result,
-    error: state.error,
+
+    messages:
+      state.messages.length,
+
+    turns:
+      state.turn,
+
+    status:
+      state.status,
+
+    result:
+      state.result,
+
+    error:
+      state.error,
   };
 }
 
@@ -175,7 +185,8 @@ async function main(): Promise<void> {
   let llm: OpenAIProvider;
 
   try {
-    llm = new OpenAIProvider();
+    llm =
+      new OpenAIProvider();
   } catch (error) {
     console.error(
       `❌ ${
@@ -192,57 +203,108 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // --------------------------------------------------
+  // DB → AgentStore
+  // --------------------------------------------------
+
+  const agents =
+    createAgentStore(db);
+
+  // --------------------------------------------------
+  // Tools
+  // --------------------------------------------------
+
   const registry =
     buildRegistry();
 
+  // --------------------------------------------------
+  // Gateway
+  // --------------------------------------------------
+
   const gateway =
-    createTestGateway(registry);
+    createTestGateway(
+      registry,
+    );
 
-  const agent: Agent = {
-    id: "multi-tool-test-agent",
-
-    name:
-      "Multi Tool Test Agent",
-
-    instructions: `
-Tu es un agent capable d'accomplir des tâches
-en plusieurs étapes.
-
-Analyse toujours la demande de l'utilisateur.
-
-Lorsque plusieurs actions sont nécessaires,
-utilise les outils disponibles.
-
-Après chaque résultat d'outil :
-- analyse le résultat ;
-- détermine si une autre action est nécessaire ;
-- continue la mission si nécessaire.
-
-Tu dois terminer la tâche avant de répondre.
-
-Ne demande jamais à l'utilisateur de réaliser
-une action que tu peux réaliser toi-même.
-    `.trim(),
-
-    model: MODEL,
-
-    tools: INTERNAL_TOOLS.map(
-      (tool) =>
-        tool.definition.id,
-    ),
-
-    subAgents: [],
-  };
+  // --------------------------------------------------
+  // Runtime
+  // --------------------------------------------------
 
   const runtime =
     new AgentRuntime(
       {
         llm,
-        tools: registry,
+
+        tools:
+          registry,
+
         gateway,
+
+        agents,
       },
+
       MAX_TURNS,
     );
+
+  // --------------------------------------------------
+  // Vérification de l'agent DB
+  // --------------------------------------------------
+
+  const agent =
+    await agents.get(
+      AGENT_ID,
+    );
+
+  if (!agent) {
+    console.error(
+      `❌ Agent "${AGENT_ID}" introuvable dans PostgreSQL.`,
+    );
+
+    console.error(
+      "",
+    );
+
+    console.error(
+      "Crée d'abord l'agent de test avec :",
+    );
+
+    console.error(
+      "bun run src/db/seed-test-agent.ts",
+    );
+
+    process.exit(1);
+  }
+
+  // --------------------------------------------------
+  // Vérification des tools
+  // --------------------------------------------------
+
+  /*
+   * Pour le test, l'agent DB doit disposer des tools
+   * utilisés par la mission.
+   *
+   * Le premier seed ne les stocke pas encore en DB.
+   *
+   * On construit donc temporairement la configuration
+   * des tools du test ici.
+   *
+   * La persistance des tools de l'agent viendra ensuite.
+   */
+
+  const agentForTest = {
+    ...agent,
+
+    model:
+      process.env.TEST_MODEL ??
+      agent.model ??
+      MODEL,
+
+    tools:
+      INTERNAL_TOOLS.map(
+        (tool) =>
+          tool.definition.id,
+      ),
+  };
 
   console.log(
     "\n============================================================",
@@ -257,7 +319,15 @@ une action que tu peux réaliser toi-même.
   );
 
   console.log(
-    `Modèle       : ${MODEL}`,
+    `Agent        : ${agentForTest.id}`,
+  );
+
+  console.log(
+    `Nom          : ${agentForTest.name}`,
+  );
+
+  console.log(
+    `Modèle       : ${agentForTest.model}`,
   );
 
   console.log(
@@ -269,7 +339,7 @@ une action que tu peux réaliser toi-même.
   );
 
   console.log(
-    `Outils       : ${agent.tools.join(", ")}`,
+    `Outils       : ${agentForTest.tools.join(", ")}`,
   );
 
   console.log(
@@ -281,6 +351,68 @@ une action que tu peux réaliser toi-même.
   console.log(
     "\n------------------------------------------------------------",
   );
+
+  /*
+   * Le runtime doit normalement récupérer l'agent lui-même
+   * depuis AgentStore.
+   *
+   * Le test utilise donc runtime.run(AGENT_ID, ...)
+   * et non runtime.run(agent, ...).
+   *
+   * IMPORTANT :
+   * Les tools sont actuellement encore définis au niveau
+   * du test, car leur persistance DB n'est pas encore implémentée.
+   *
+   * Pour que le runtime chargé depuis DB connaisse ces tools,
+   * on adapte temporairement l'agent retourné par le store
+   * ci-dessous.
+   */
+
+  const originalGet =
+    agents.get.bind(agents);
+
+  const testAgents = {
+    async get(
+      agentId: string,
+    ) {
+      const loaded =
+        await originalGet(
+          agentId,
+        );
+
+      if (!loaded) {
+        return null;
+      }
+
+      return {
+        ...loaded,
+
+        model:
+          agentForTest.model,
+
+        tools:
+          agentForTest.tools,
+      };
+    },
+  };
+
+  const testRuntime =
+    new AgentRuntime(
+      {
+        llm,
+
+        tools:
+          registry,
+
+        gateway,
+
+        agents:
+          testAgents,
+
+      },
+
+      MAX_TURNS,
+    );
 
   let totalPassed = 0;
 
@@ -296,11 +428,12 @@ une action que tu peux réaliser toi-même.
     try {
       const outcome =
         await runOnce(
-          runtime,
-          agent,
+          testRuntime,
         );
 
-      if (outcome.passed) {
+      if (
+        outcome.passed
+      ) {
         totalPassed++;
 
         console.log(
@@ -331,18 +464,24 @@ une action que tu peux réaliser toi-même.
       console.log(
         `   Outils utilisés : ${
           outcome.uniqueTools.length
-            ? outcome.uniqueTools.join(", ")
+            ? outcome.uniqueTools.join(
+                ", ",
+              )
             : "aucun"
         }`,
       );
 
-      if (outcome.result) {
+      if (
+        outcome.result
+      ) {
         console.log(
           `   Résultat     : ${outcome.result}`,
         );
       }
 
-      if (outcome.error) {
+      if (
+        outcome.error
+      ) {
         console.log(
           `   Erreur       : ${outcome.error}`,
         );

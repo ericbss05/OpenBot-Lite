@@ -1,5 +1,5 @@
 import { serve } from "bun";
-import { createAgentStore } from "./agents/store";
+import { createAgentStore } from "./agent-profiles/store";
 import { createApp } from "./app";
 import { createAuthMiddleware } from "./auth/guards";
 import { createChannelStore } from "./channels/store";
