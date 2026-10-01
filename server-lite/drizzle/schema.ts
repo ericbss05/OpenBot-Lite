@@ -98,24 +98,6 @@ export const workItems = pgTable("work_items", {
 	uniqueIndex("work_items_kind_key").using("btree", table.kind.asc().nullsLast().op("text_ops"), table.key.asc().nullsLast().op("text_ops")),
 ]);
 
-export const agentProfiles = pgTable("agent_profiles", {
-	id: text().primaryKey().notNull(),
-	name: text().notNull(),
-	title: text().notNull(),
-	roleDescription: text("role_description").notNull(),
-	visibility: text().notNull(),
-	endpoint: text().notNull(),
-	ownerUserId: text("owner_user_id"),
-	createdAt: timestamp("created_at", { mode: 'string' }).defaultNow().notNull(),
-}, (table) => [
-	index("agent_profiles_owner_user_idx").using("btree", table.ownerUserId.asc().nullsLast().op("text_ops")),
-	foreignKey({
-			columns: [table.ownerUserId],
-			foreignColumns: [user.id],
-			name: "agent_profiles_owner_user_id_user_id_fk"
-		}).onDelete("cascade"),
-]);
-
 export const auditEvents = pgTable("audit_events", {
 	id: text().primaryKey().notNull(),
 	type: text().notNull(),
@@ -136,11 +118,10 @@ export const channels = pgTable("channels", {
 	id: text().primaryKey().notNull(),
 	name: text().notNull(),
 	threadId: text("thread_id").notNull(),
-	agentIds: text("agent_ids").notNull(),
 	active: boolean().notNull(),
 	lastMessageAt: timestamp("last_message_at", { mode: 'string' }),
 	createdAt: timestamp("created_at", { mode: 'string' }).defaultNow().notNull(),
-	userId: text("user_id"),
+	userId: text("user_id").notNull(),
 }, (table) => [
 	index("channels_thread_idx").using("btree", table.threadId.asc().nullsLast().op("text_ops")),
 	index("channels_user_idx").using("btree", table.userId.asc().nullsLast().op("text_ops")),
@@ -201,5 +182,47 @@ export const routines = pgTable("routines", {
 			columns: [table.userId],
 			foreignColumns: [user.id],
 			name: "routines_user_id_user_id_fk"
+		}).onDelete("cascade"),
+]);
+
+export const agentProfiles = pgTable("agent_profiles", {
+	id: text().primaryKey().notNull(),
+	name: text().notNull(),
+	title: text(),
+	roleDescription: text("role_description"),
+	visibility: text().notNull(),
+	endpoint: text(),
+	ownerUserId: text("owner_user_id"),
+	createdAt: timestamp("created_at", { mode: 'string' }).defaultNow().notNull(),
+	model: text().default('gpt-6-luna').notNull(),
+	avatarPalette: integer("avatar_palette").default(0).notNull(),
+	avatarReversed: boolean("avatar_reversed").default(false).notNull(),
+}, (table) => [
+	index("agent_profiles_owner_user_idx").using("btree", table.ownerUserId.asc().nullsLast().op("text_ops")),
+	foreignKey({
+			columns: [table.ownerUserId],
+			foreignColumns: [user.id],
+			name: "agent_profiles_owner_user_id_user_id_fk"
+		}).onDelete("cascade"),
+]);
+
+export const channelAgents = pgTable("channel_agents", {
+	channelId: text("channel_id").notNull(),
+	agentId: text("agent_id").notNull(),
+	role: text().notNull(),
+	createdAt: timestamp("created_at", { mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("channel_agents_agent_idx").using("btree", table.agentId.asc().nullsLast().op("text_ops")),
+	uniqueIndex("channel_agents_channel_agent_idx").using("btree", table.channelId.asc().nullsLast().op("text_ops"), table.agentId.asc().nullsLast().op("text_ops")),
+	index("channel_agents_channel_idx").using("btree", table.channelId.asc().nullsLast().op("text_ops")),
+	foreignKey({
+			columns: [table.channelId],
+			foreignColumns: [channels.id],
+			name: "channel_agents_channel_id_channels_id_fk"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.agentId],
+			foreignColumns: [agentProfiles.id],
+			name: "channel_agents_agent_id_agent_profiles_id_fk"
 		}).onDelete("cascade"),
 ]);

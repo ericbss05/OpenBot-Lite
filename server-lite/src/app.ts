@@ -5,7 +5,7 @@ import type { AgentStore } from "./agent-profiles/store";
 import { auth } from "./auth/auth";
 import type { AppVariables, createAuthMiddleware } from "./auth/guards";
 import { requireUser } from "./auth/guards";
-import type { ChannelStore } from "./channels/store";
+import type { ChannelService } from "./channels/service";
 import type { LiteConfig } from "./config";
 import type { AuditStore } from "./gateway/audit";
 import type { Gateway } from "./gateway/store";
@@ -20,7 +20,7 @@ export function createApp(deps: {
   config: LiteConfig;
   auth: Auth;
   agents: AgentStore;
-  channels: ChannelStore;
+  channels: ChannelService;
   gateway: Gateway;
   audit: AuditStore;
   queue: WorkQueue;
@@ -191,36 +191,217 @@ app.delete("/api/agents/:id", async (c) => {
   }
 });
 
-  app.get("/api/channels", async (c) => {
-    return c.json(await deps.channels.list());
-  });
+// ============================================================
+// Channels
+// ============================================================
 
-  app.post("/api/channels", async (c) => {
-    const user = requireUser(c);
+app.get("/api/channels", async (c) => {
+  const user = requireUser(c);
 
-    const body = z
-      .object({
-        name: z.string().min(1),
-        agentIds: z.array(z.string()).min(1),
-      })
-      .parse(await c.req.json());
+  return c.json(
+    await deps.channels.list(user.id),
+  );
+});
 
-    const channel = await deps.channels.create(body);
+app.post("/api/channels", async (c) => {
+  const user = requireUser(c);
 
-    await deps.audit.record("channel.created", user.id, {
-      channelId: channel.id,
-    });
+  const body = z
+    .object({
+      name: z.string().min(1),
+      agents: z
+        .array(
+          z.object({
+            agentId: z.string().min(1),
+            role: z.enum([
+              "primary",
+              "subagent",
+            ]),
+          }),
+        )
+        .min(1),
+    })
+    .parse(await c.req.json());
+
+  try {
+    const channel = await deps.channels.create(
+      body,
+      user.id,
+    );
+
+    await deps.audit.record(
+      "channel.created",
+      user.id,
+      {
+        channelId: channel.id,
+      },
+    );
 
     return c.json(channel, 201);
-  });
+  } catch (error) {
+    return c.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to create channel",
+      },
+      400,
+    );
+  }
+});
 
-  app.get("/api/channels/:id/messages", async (c) => {
-    const id = c.req.param("id");
+app.get("/api/channels/:id", async (c) => {
+  const user = requireUser(c);
+  const channelId = c.req.param("id");
 
-    return c.json(await deps.channels.history(id));
-  });
+  const channel = await deps.channels.get(
+    channelId,
+    user.id,
+  );
 
-  app.post("/api/channels/:id/messages", async (c) => {
+  if (!channel) {
+    return c.json(
+      { error: "Channel not found" },
+      404,
+    );
+  }
+
+  return c.json(channel);
+});
+
+app.patch("/api/channels/:id", async (c) => {
+  const user = requireUser(c);
+  const channelId = c.req.param("id");
+
+  const body = z
+    .object({
+      name: z.string().min(1).optional(),
+
+      active: z.boolean().optional(),
+
+      agents: z
+        .array(
+          z.object({
+            agentId: z.string().min(1),
+            role: z.enum([
+              "primary",
+              "subagent",
+            ]),
+          }),
+        )
+        .min(1)
+        .optional(),
+    })
+    .parse(await c.req.json());
+
+  try {
+    const channel = await deps.channels.update(
+      channelId,
+      user.id,
+      body,
+    );
+
+    if (!channel) {
+      return c.json(
+        { error: "Channel not found" },
+        404,
+      );
+    }
+
+    await deps.audit.record(
+      "channel.updated",
+      user.id,
+      {
+        channelId: channel.id,
+      },
+    );
+
+    return c.json(channel);
+  } catch (error) {
+    return c.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to update channel",
+      },
+      400,
+    );
+  }
+});
+
+app.delete("/api/channels/:id", async (c) => {
+  const user = requireUser(c);
+  const channelId = c.req.param("id");
+
+  try {
+    const deleted = await deps.channels.delete(
+      channelId,
+      user.id,
+    );
+
+    if (!deleted) {
+      return c.json(
+        { error: "Channel not found" },
+        404,
+      );
+    }
+
+    await deps.audit.record(
+      "channel.deleted",
+      user.id,
+      {
+        channelId,
+      },
+    );
+
+    return c.json({
+      success: true,
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to delete channel",
+      },
+      400,
+    );
+  }
+});
+
+// ============================================================
+// Channel Messages
+// ============================================================
+
+app.get(
+  "/api/channels/:id/messages",
+  async (c) => {
+    const user = requireUser(c);
+    const channelId = c.req.param("id");
+
+    const history =
+      await deps.channels.getHistory(
+        channelId,
+        user.id,
+      );
+
+    if (history === null) {
+      return c.json(
+        { error: "Channel not found" },
+        404,
+      );
+    }
+
+    return c.json(history);
+  },
+);
+
+app.post(
+  "/api/channels/:id/messages",
+  async (c) => {
     const user = requireUser(c);
     const channelId = c.req.param("id");
 
@@ -231,36 +412,87 @@ app.delete("/api/agents/:id", async (c) => {
       })
       .parse(await c.req.json());
 
-    const channel = await deps.channels.get(channelId);
+    try {
+      const result =
+        await deps.channels.sendMessage(
+          {
+            channelId,
+            content: body.content,
+          },
+          user.id,
+        );
 
-    if (!channel) {
-      return c.json({ error: "Not found" }, 404);
+      if (!result) {
+        return c.json(
+          { error: "Channel not found" },
+          404,
+        );
+      }
+
+      const agentId =
+        body.agentId ??
+        result.channel.agents.find(
+          (agent) =>
+            agent.role === "primary",
+        )?.agentId;
+
+      if (!agentId) {
+        return c.json(
+          {
+            error:
+              "No primary agent on channel",
+          },
+          400,
+        );
+      }
+
+      const agentExists =
+        result.channel.agents.some(
+          (agent) =>
+            agent.agentId === agentId,
+        );
+
+      if (!agentExists) {
+        return c.json(
+          {
+            error:
+              "Agent is not attached to this channel",
+          },
+          400,
+        );
+      }
+
+      await deps.queue.offer(
+        "channel.turn",
+        `${channelId}:${Date.now()}`,
+        {
+          channelId,
+          agentId,
+          actorId: user.id,
+        },
+      );
+
+      return c.json(
+        {
+          queued: true,
+          channelId,
+          agentId,
+        },
+        202,
+      );
+    } catch (error) {
+      return c.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to send message",
+        },
+        400,
+      );
     }
-
-    const agentId = body.agentId ?? channel.agentIds[0];
-
-    if (!agentId) {
-      return c.json({ error: "No agent on channel" }, 400);
-    }
-
-    await deps.channels.appendMessage({
-      channelId,
-      role: "user",
-      content: body.content,
-    });
-
-    await deps.queue.offer(
-      "channel.turn",
-      `${channelId}:${Date.now()}`,
-      {
-        channelId,
-        agentId,
-        actorId: user.id,
-      },
-    );
-
-    return c.json({ queued: true }, 202);
-  });
+  },
+);
 
   app.get("/api/admin/audit-events", async (c) => {
     return c.json(await deps.audit.list(100));

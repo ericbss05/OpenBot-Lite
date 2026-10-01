@@ -9,7 +9,11 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
 import type { Db } from "../db";
-import { agentProfiles } from "../db/schema";
+import {
+  agentProfiles,
+  channelAgents,
+  channels,
+} from "../db/schema";
 
 import { checkAgentEndpoint } from "./endpoint-check";
 
@@ -187,59 +191,82 @@ export function createAgentStore(
       : null;
   }
 
-  async function create(
-    input: z.infer<
-      typeof createSchema
-    >,
-    ownerUserId: string,
-  ): Promise<AgentProfile> {
-    const parsed =
-      createSchema.parse(input);
+async function create(
+  input: z.infer<typeof createSchema>,
+  ownerUserId: string,
+): Promise<AgentProfile> {
+  const parsed = createSchema.parse(input);
 
-    const endpoint =
-      parsed.endpoint
-        ? validateEndpoint(
-            parsed.endpoint,
-          )
-        : null;
+  const endpoint = parsed.endpoint
+    ? validateEndpoint(parsed.endpoint)
+    : null;
 
-    const row = {
-      id: randomUUID(),
+  const now = new Date();
 
-      name: parsed.name,
+  const agentId = randomUUID();
+  const channelId = randomUUID();
+  const threadId = randomUUID();
 
-      title:
-        parsed.title ?? null,
+  const agentRow = {
+    id: agentId,
 
-      roleDescription:
-        parsed.roleDescription ??
-        null,
+    name: parsed.name,
 
-      model: "gpt-6-luna",
+    title:
+      parsed.title ?? null,
 
-      visibility:
-        "private" as const,
+    roleDescription:
+      parsed.roleDescription ?? null,
 
-      endpoint,
+    model: "gpt-6-luna",
 
-      avatarPalette:
-        parsed.avatarPalette ?? 0,
+    visibility: "private" as const,
 
-      avatarReversed:
-        parsed.avatarReversed ??
-        false,
+    endpoint,
 
-      ownerUserId,
+    avatarPalette:
+      parsed.avatarPalette ?? 0,
 
-      createdAt: new Date(),
-    };
+    avatarReversed:
+      parsed.avatarReversed ?? false,
 
-    await db
+    ownerUserId,
+
+    createdAt: now,
+  };
+
+  await db.transaction(async (tx) => {
+    // 1. Create the agent
+    await tx
       .insert(agentProfiles)
-      .values(row);
+      .values(agentRow);
 
-    return mapRow(row);
-  }
+    // 2. Create its default channel
+    await tx
+      .insert(channels)
+      .values({
+        id: channelId,
+        name: "General",
+        threadId,
+        active: true,
+        lastMessageAt: null,
+        createdAt: now,
+        userId: ownerUserId,
+      });
+
+    // 3. Attach the new agent as primary
+    await tx
+      .insert(channelAgents)
+      .values({
+        channelId,
+        agentId,
+        role: "primary",
+        createdAt: now,
+      });
+  });
+
+  return mapRow(agentRow);
+}
 
   async function update(
     id: string,

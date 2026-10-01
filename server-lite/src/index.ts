@@ -2,7 +2,10 @@ import { serve } from "bun";
 import { createAgentStore } from "./agent-profiles/store";
 import { createApp } from "./app";
 import { createAuthMiddleware } from "./auth/guards";
-import { createChannelStore } from "./channels/store";
+import {
+  createChannelService,
+  createChannelStore,
+} from "./channels";
 import { loadConfig } from "./config";
 import { db } from "./db";
 import { createAuditStore } from "./gateway/audit";
@@ -15,12 +18,23 @@ import { createWorkQueue } from "./work/queue";
 
 const config = loadConfig();
 
-const agents = createAgentStore(db, config.ALLOW_PRIVATE_HOSTS);
+const agents = createAgentStore(
+  db,
+  config.ALLOW_PRIVATE_HOSTS,
+);
+
 await agents.syncFromYaml("agents.yaml");
 
-const channels = createChannelStore(db);
+const channelStore = createChannelStore(db);
+const channels = createChannelService(channelStore);
+
 const audit = createAuditStore(db);
-const gateway = createGateway(db, config.ACTION_POLICY_MODE);
+
+const gateway = createGateway(
+  db,
+  config.ACTION_POLICY_MODE,
+);
+
 await gateway.start();
 
 const queue = createWorkQueue(db);
@@ -29,17 +43,19 @@ const plugins = createPluginStore(db);
 
 const turnRunner = createTurnRunner({
   queue,
-  channels,
+  channels: channelStore,
   agents,
   audit,
 });
+
 turnRunner.start();
 
 const routineRunner = createRoutineRunner({
   routines,
-  channels,
+  channels: channelStore,
   queue,
 });
+
 routineRunner.start();
 
 const app = createApp({

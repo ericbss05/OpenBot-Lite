@@ -18,14 +18,18 @@ export const auditEvents = pgTable(
 
     type: text("type").notNull(),
 
-    actorId: text("actor_id")
-      .notNull()
-      .references(() => user.id, {
-        onDelete: "cascade",
-      }),
+    actorType: text("actor_type", {
+      enum: ["user", "system"],
+    }).notNull(),
 
-    payload: text("payload")
-      .notNull(),
+    actorId: text("actor_id").references(
+      () => user.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+
+    payload: text("payload").notNull(),
 
     createdAt: timestamp("created_at")
       .defaultNow()
@@ -37,6 +41,9 @@ export const auditEvents = pgTable(
 
     index("audit_actor_idx")
       .on(table.actorId),
+
+    index("audit_actor_type_idx")
+      .on(table.actorType),
   ],
 );
 

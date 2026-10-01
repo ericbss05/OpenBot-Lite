@@ -36,12 +36,15 @@ export function createTurnRunner(deps: {
       payload.actorId ?? "system",
     );
 
-    const channel =
-      await deps.channels.get(channelId);
+const channel =
+  await deps.channels.getOwned(
+    channelId,
+    actorId,
+  );
 
-    if (!channel) {
-      return;
-    }
+if (!channel) {
+  return;
+}
 
     const agent =
       await deps.agents.get(agentId);
@@ -110,16 +113,17 @@ export function createTurnRunner(deps: {
           );
         } catch (error) {
           await deps.audit.record(
-            "channel.turn_failed",
-            "system",
-            {
-              error:
-                error instanceof Error
-                  ? error.message
-                  : String(error),
-              workId: item.id,
-            },
-          );
+  "channel.turn_failed",
+  null,
+  {
+    error:
+      error instanceof Error
+        ? error.message
+        : String(error),
+    workId: item.id,
+  },
+  "system",
+);
 
           await deps.queue.fail(
             item.id,

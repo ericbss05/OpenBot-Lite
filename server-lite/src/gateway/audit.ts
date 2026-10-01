@@ -1,20 +1,25 @@
 import { randomUUID } from "node:crypto";
 import { desc } from "drizzle-orm";
+
 import type { Db } from "../db";
 import { auditEvents } from "../db/schema";
 
-export type AuditStore = ReturnType<typeof createAuditStore>;
+export type AuditStore = ReturnType<
+  typeof createAuditStore
+>;
 
 export function createAuditStore(db: Db) {
   return {
     async record(
       type: string,
-      actorId: string,
+      actorId: string | null,
       payload: Record<string, unknown>,
+      actorType: "user" | "system" = "user",
     ) {
       const row = {
         id: randomUUID(),
         type,
+        actorType,
         actorId,
         payload: JSON.stringify(redact(payload)),
         createdAt: new Date(),
@@ -51,7 +56,9 @@ function redact(value: unknown): unknown {
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
 
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    for (const [k, v] of Object.entries(
+      value as Record<string, unknown>,
+    )) {
       out[k] = SENSITIVE.has(k.toLowerCase())
         ? "[redacted]"
         : redact(v);

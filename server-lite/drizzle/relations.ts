@@ -1,5 +1,5 @@
 import { relations } from "drizzle-orm/relations";
-import { user, account, session, agentProfiles, auditEvents, channels, channelMessages, routines } from "./schema";
+import { user, account, session, auditEvents, channels, channelMessages, agentProfiles, routines, channelAgents } from "./schema";
 
 export const accountRelations = relations(account, ({one}) => ({
 	user: one(user, {
@@ -11,10 +11,10 @@ export const accountRelations = relations(account, ({one}) => ({
 export const userRelations = relations(user, ({many}) => ({
 	accounts: many(account),
 	sessions: many(session),
-	agentProfiles: many(agentProfiles),
 	auditEvents: many(auditEvents),
 	channels: many(channels),
 	routines: many(routines),
+	agentProfiles: many(agentProfiles),
 }));
 
 export const sessionRelations = relations(session, ({one}) => ({
@@ -22,15 +22,6 @@ export const sessionRelations = relations(session, ({one}) => ({
 		fields: [session.userId],
 		references: [user.id]
 	}),
-}));
-
-export const agentProfilesRelations = relations(agentProfiles, ({one, many}) => ({
-	user: one(user, {
-		fields: [agentProfiles.ownerUserId],
-		references: [user.id]
-	}),
-	channelMessages: many(channelMessages),
-	routines: many(routines),
 }));
 
 export const auditEventsRelations = relations(auditEvents, ({one}) => ({
@@ -47,6 +38,7 @@ export const channelsRelations = relations(channels, ({one, many}) => ({
 	}),
 	channelMessages: many(channelMessages),
 	routines: many(routines),
+	channelAgents: many(channelAgents),
 }));
 
 export const channelMessagesRelations = relations(channelMessages, ({one}) => ({
@@ -58,6 +50,16 @@ export const channelMessagesRelations = relations(channelMessages, ({one}) => ({
 		fields: [channelMessages.agentId],
 		references: [agentProfiles.id]
 	}),
+}));
+
+export const agentProfilesRelations = relations(agentProfiles, ({one, many}) => ({
+	channelMessages: many(channelMessages),
+	routines: many(routines),
+	user: one(user, {
+		fields: [agentProfiles.ownerUserId],
+		references: [user.id]
+	}),
+	channelAgents: many(channelAgents),
 }));
 
 export const routinesRelations = relations(routines, ({one}) => ({
@@ -72,5 +74,16 @@ export const routinesRelations = relations(routines, ({one}) => ({
 	user: one(user, {
 		fields: [routines.userId],
 		references: [user.id]
+	}),
+}));
+
+export const channelAgentsRelations = relations(channelAgents, ({one}) => ({
+	channel: one(channels, {
+		fields: [channelAgents.channelId],
+		references: [channels.id]
+	}),
+	agentProfile: one(agentProfiles, {
+		fields: [channelAgents.agentId],
+		references: [agentProfiles.id]
 	}),
 }));

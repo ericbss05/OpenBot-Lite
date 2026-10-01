@@ -12,6 +12,7 @@ import {
 
 import {
   channels,
+  channelAgents,
   channelMessages,
 } from "./channels";
 
@@ -85,6 +86,10 @@ export const agentProfileRelations =
         references: [user.id],
       }),
 
+      channelAssignments: many(
+        channelAgents,
+      ),
+
       messages: many(
         channelMessages,
       ),
@@ -106,11 +111,41 @@ export const channelRelations =
         references: [user.id],
       }),
 
+      agents: many(
+        channelAgents,
+      ),
+
       messages: many(
         channelMessages,
       ),
 
       routines: many(routines),
+    }),
+  );
+
+// ============================================================
+// Channel Agent
+// ============================================================
+
+export const channelAgentRelations =
+  relations(
+    channelAgents,
+    ({ one }) => ({
+      channel: one(channels, {
+        fields: [
+          channelAgents.channelId,
+        ],
+        references: [channels.id],
+      }),
+
+      agent: one(agentProfiles, {
+        fields: [
+          channelAgents.agentId,
+        ],
+        references: [
+          agentProfiles.id,
+        ],
+      }),
     }),
   );
 
