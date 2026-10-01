@@ -2,12 +2,22 @@ import type {
   ApprovalDecision,
   ApprovalStore,
 } from "../approvals/approvals";
+
 import type { AgentEventSink } from "../events/events";
-import type { LLMProvider } from "../llm/provider";
+
+import type {
+  LLMMessage,
+  LLMProvider,
+} from "../llm/provider";
+
 import { ToolRegistry } from "../tools/tools";
+
 import type { GatewayExecutor } from "../../gateway/executor";
+
 import type { AgentStore } from "../store";
+
 import { RuntimeLoop } from "./loop";
+
 import type { RuntimeState } from "./state";
 
 export interface AgentRuntimeDependencies {
@@ -44,12 +54,13 @@ export class AgentRuntime {
    * Démarre un nouveau run à partir
    * de l'identifiant d'un agent.
    *
-   * L'agent est chargé depuis l'AgentStore,
-   * puis transmis au RuntimeLoop.
+   * L'historique de conversation est fourni
+   * par le caller et devient la mémoire de travail
+   * du Runtime pour ce run.
    */
   async run(
     agentId: string,
-    message: string,
+    messages: LLMMessage[],
   ): Promise<RuntimeState> {
     const agent =
       await this.dependencies.agents.get(
@@ -62,6 +73,12 @@ export class AgentRuntime {
       );
     }
 
+    if (messages.length === 0) {
+      throw new Error(
+        "Cannot run agent without messages.",
+      );
+    }
+
     const state: RuntimeState = {
       runId: crypto.randomUUID(),
 
@@ -69,12 +86,7 @@ export class AgentRuntime {
 
       status: "pending",
 
-      messages: [
-        {
-          role: "user",
-          content: message,
-        },
-      ],
+      messages: [...messages],
 
       turn: 0,
 

@@ -109,9 +109,14 @@ async function runOnce(
 ): Promise<RunOutcome> {
   const state =
     await runtime.run(
-      AGENT_ID,
-      MISSION,
-    );
+  "test-agent",
+  [
+    {
+      role: "user",
+      content: MISSION,
+    },
+  ],
+);
 
   const called =
     state.toolResults.map(

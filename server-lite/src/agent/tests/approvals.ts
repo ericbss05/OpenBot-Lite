@@ -341,10 +341,14 @@ Ne me demande pas de réaliser l'action à ta place.
 
   const initialState =
     await runtime.run(
-      AGENT_ID,
-      mission,
-    );
-
+  "test-agent",
+  [
+    {
+      role: "user",
+      content: mission,
+    },
+  ],
+);
   console.log(
     `Status       : ${initialState.status}`,
   );

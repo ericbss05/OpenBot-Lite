@@ -225,7 +225,7 @@ export function createChannelStore(db: Db) {
 
     async history(
       channelId: string,
-      limit = 100,
+      limit = 40,
     ): Promise<ChannelMessage[]> {
       const rows = await db
         .select()
