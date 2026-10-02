@@ -1,33 +1,68 @@
 import type { LLMMessage } from "../agent/llm/provider";
 import type { AgentRuntime } from "../agent/runtime/runtime";
-import type { ChannelStore } from "../channels/store";
 import type { AuditStore } from "../gateway/audit";
 import type { WorkQueue } from "./queue";
+import { AgentConversation } from "../agent/conversation";
+import type { LLMProvider } from "../agent/llm/provider";
+import type { ToolRegistry } from "../agent/tools/tools";
+import type { Agent } from "../agent/agent";
 
 export type TurnRunner =
   ReturnType<typeof createTurnRunner>;
 
+  
 export function createTurnRunner(deps: {
   queue: WorkQueue;
-  channels: ChannelStore;
+
+  channels: {
+    getOwned(
+      channelId: string,
+      userId: string,
+    ): Promise<{
+      id: string;
+      active: boolean;
+    } | null>;
+
+    history(
+      channelId: string,
+      limit?: number,
+    ): Promise<
+      Array<{
+        role:
+          | "user"
+          | "assistant"
+          | "system";
+        content: string;
+      }>
+    >;
+
+    appendMessage(input: {
+      channelId: string;
+      role:
+        | "user"
+        | "assistant"
+        | "system";
+      content: string;
+      agentId?: string;
+    }): Promise<unknown>;
+  };
+
   audit: AuditStore;
 
-  /**
-   * Crée un runtime pour l'utilisateur
-   * qui déclenche le turn.
-   *
-   * Le runtime reçoit son actorId afin que
-   * les tools exécutés puissent être associés
-   * au bon utilisateur.
-   */
+  llm: LLMProvider;
+  tools: ToolRegistry;
+
+  getAgent(
+    agentId: string,
+  ): Promise<Agent | null>;
+
   createRuntime: (
     actorId: string,
   ) => AgentRuntime;
 
   pollMs?: number;
 }) {
-  const pollMs =
-    deps.pollMs ?? 500;
+  const pollMs = deps.pollMs ?? 500;
 
   let stopped = false;
 
@@ -103,32 +138,30 @@ export function createTurnRunner(deps: {
     }
 
     /*
-     * channel_messages utilise les rôles :
+     * Les messages du channel utilisent :
      *
      * user | assistant | system
      *
-     * Le runtime LLM utilise :
+     * Le runtime utilise :
      *
      * user | assistant | tool
      *
-     * Les messages "system" ne sont donc pas
-     * envoyés ici. Les instructions système de
-     * l'agent sont déjà fournies séparément par
-     * AgentRuntime → LLMProvider.
+     * Les messages system sont gérés séparément
+     * par l'agent / LLM provider.
      */
     const messages: LLMMessage[] = [];
 
-for (const message of history) {
-  if (
-    message.role === "user" ||
-    message.role === "assistant"
-  ) {
-    messages.push({
-      role: message.role,
-      content: message.content,
-    });
-  }
-}
+    for (const message of history) {
+      if (
+        message.role === "user" ||
+        message.role === "assistant"
+      ) {
+        messages.push({
+          role: message.role,
+          content: message.content,
+        });
+      }
+    }
 
     if (messages.length === 0) {
       throw new Error(
@@ -140,75 +173,81 @@ for (const message of history) {
     // Runtime
     // --------------------------------------------------
 
-    const runtime =
-      deps.createRuntime(actorId);
+  const agent =
+  await deps.getAgent(agentId);
 
-    const result =
-      await runtime.run(
-        agentId,
-        messages,
-      );
+if (!agent) {
+  throw new Error(
+    `Agent "${agentId}" not found.`,
+  );
+}
+
+const runtime =
+  deps.createRuntime(actorId);
+
+const conversation =
+  new AgentConversation(
+    deps.llm,
+    deps.tools,
+    runtime,
+);
+
+const result =
+  await conversation.run(
+    agent,
+    messages,
+  );
 
     // --------------------------------------------------
     // Runtime failed
     // --------------------------------------------------
 
-    if (
-      result.status === "failed"
-    ) {
-      throw new Error(
-        result.error ??
-          `Agent "${agentId}" runtime failed.`,
-      );
-    }
+    if (result.status === "failed") {
+  throw new Error(
+    result.error ??
+      `Agent "${agentId}" conversation failed.`,
+  );
+}
 
     // --------------------------------------------------
     // Runtime waiting for approval
     // --------------------------------------------------
 
-    if (
-      result.status === "waiting"
-    ) {
-      await deps.audit.record(
-        "channel.agent_waiting",
-        actorId,
-        {
-          channelId,
-          agentId,
-          runId: result.runId,
-          pendingApprovalId:
-            result.pendingApprovalId ??
-            null,
-        },
-      );
+    if (result.status === "waiting") {
+  await deps.audit.record(
+    "channel.agent_waiting",
+    actorId,
+    {
+      channelId,
+      agentId,
+      runId: result.runId,
+      pendingApprovalId:
+        result.pendingApprovalId ??
+        null,
+    },
+  );
 
-      return;
-    }
+  return;
+}
 
     // --------------------------------------------------
     // Unexpected runtime status
     // --------------------------------------------------
 
-    if (
-      result.status !== "completed"
-    ) {
-      throw new Error(
-        `Agent runtime ended with status "${result.status}".`,
-      );
-    }
+    if (result.status !== "completed") {
+  throw new Error(
+    `Agent conversation ended with status "${result.status}".`,
+  );
+}
 
-    // --------------------------------------------------
-    // Assistant response
-    // --------------------------------------------------
+const reply =
+  result.content?.trim();
 
-    const reply =
-      result.result?.trim();
-
-    if (!reply) {
-      throw new Error(
-        `Agent "${agentId}" completed without a response.`,
-      );
-    }
+if (!reply) {
+  throw new Error(
+    `Agent "${agentId}" completed without a response.`,
+  );
+}
 
     // --------------------------------------------------
     // Save assistant response
@@ -272,9 +311,7 @@ for (const message of history) {
         }
       }
 
-      await Bun.sleep(
-        pollMs,
-      );
+      await Bun.sleep(pollMs);
     }
   }
 

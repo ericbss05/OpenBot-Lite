@@ -1,17 +1,32 @@
 import assert from "node:assert/strict";
+
 import {
   ToolExecutor,
   ToolRegistry,
   type Tool,
 } from "../../agent/tools/tools";
-import { GatewayExecutor } from "../executor";
-import type { Gateway } from "../store";
-import type { AuditStore } from "../audit";
+
+import {
+  GatewayExecutor,
+} from "../executor";
+
+import type {
+  Gateway,
+} from "../store";
+
+import type {
+  AuditStore,
+} from "../audit";
+
+import type {
+  ToolAuthorizer,
+} from "../../agent/authorization";
 
 const testTool: Tool = {
   definition: {
     id: "gateway_test",
-    description: "Tool utilisé pour tester le Gateway.",
+    description:
+      "Tool utilisé pour tester le Gateway.",
     inputSchema: {
       type: "object",
     },
@@ -28,7 +43,8 @@ const testTool: Tool = {
 const approvalTool: Tool = {
   definition: {
     id: "gateway_approval_test",
-    description: "Tool utilisé pour tester les approvals.",
+    description:
+      "Tool utilisé pour tester les approvals.",
     inputSchema: {
       type: "object",
     },
@@ -38,6 +54,22 @@ const approvalTool: Tool = {
   async execute() {
     return {
       shouldNotRun: true,
+    };
+  },
+};
+
+let authorizationAllowed = true;
+
+const authorization: ToolAuthorizer = {
+  async authorize(
+    _agentId,
+    _toolId,
+  ) {
+    return {
+      allowed: authorizationAllowed,
+      reason: authorizationAllowed
+        ? undefined
+        : "Tool refusé par le test d'autorisation.",
     };
   },
 };
@@ -100,6 +132,7 @@ const gatewayExecutor =
     executor,
     gateway,
     audit,
+    authorization,
   );
 
 console.log(
@@ -113,6 +146,10 @@ console.log(
 console.log(
   "============================================================",
 );
+
+// --------------------------------------------------
+// TEST 1 — Tool autorisé
+// --------------------------------------------------
 
 const result =
   await gatewayExecutor.execute({
@@ -145,6 +182,10 @@ console.log(
   "✅ Tool autorisé → exécuté",
 );
 
+// --------------------------------------------------
+// TEST 2 — Approval
+// --------------------------------------------------
+
 const approvalResult =
   await gatewayExecutor.execute({
     context: {
@@ -170,8 +211,54 @@ console.log(
   "✅ Tool sensible → approval_required",
 );
 
+// --------------------------------------------------
+// TEST 3 — Authorization refusée
+// --------------------------------------------------
+
+authorizationAllowed = false;
+
+const deniedResult =
+  await gatewayExecutor.execute({
+    context: {
+      runId: "run-test",
+      actorId: "user-test",
+      botId: "agent-test",
+    },
+
+    toolCall: {
+      id: "call-denied-test",
+      toolId: "gateway_test",
+      arguments: {
+        should: "not execute",
+      },
+    },
+  });
+
+assert.equal(
+  deniedResult.status,
+  "denied",
+);
+
+assert.equal(
+  deniedResult.reason,
+  "Tool refusé par le test d'autorisation.",
+);
+
+assert.equal(
+  deniedResult.result,
+  undefined,
+);
+
+console.log(
+  "✅ Tool non autorisé → denied",
+);
+
+// --------------------------------------------------
+// Audit
+// --------------------------------------------------
+
 assert.ok(
-  auditEntries.length >= 2,
+  auditEntries.length >= 3,
 );
 
 console.log(

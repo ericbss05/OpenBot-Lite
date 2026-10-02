@@ -7,6 +7,7 @@ import type {
 
 import type { Gateway } from "./store";
 import type { AuditStore } from "./audit";
+import type { ToolAuthorizationService } from "../agent/authorization";
 
 export interface GatewayExecutionContext {
   runId: string;
@@ -47,4 +48,5 @@ export interface GatewayExecutorDependencies {
   executor: ToolExecutor;
   gateway: Gateway;
   audit: AuditStore;
+  authorization: ToolAuthorizationService;
 }

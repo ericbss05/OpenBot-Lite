@@ -1,6 +1,8 @@
 import { apiRequest } from "@/lib/api/client";
 
-export type ChannelAgentRole = "primary" | "subagent";
+export type ChannelAgentRole =
+  | "primary"
+  | "subagent";
 
 export type ChannelAgent = {
   agentId: string;
@@ -52,7 +54,9 @@ export type SendChannelMessageResponse = {
 export async function getChannels(): Promise<
   Channel[]
 > {
-  return apiRequest<Channel[]>("/api/channels");
+  return apiRequest<Channel[]>(
+    "/api/channels",
+  );
 }
 
 export async function getChannel(
@@ -66,10 +70,13 @@ export async function getChannel(
 export async function createChannel(
   input: CreateChannelInput,
 ): Promise<Channel> {
-  return apiRequest<Channel>("/api/channels", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
+  return apiRequest<Channel>(
+    "/api/channels",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
 }
 
 export async function updateChannel(
@@ -88,7 +95,9 @@ export async function updateChannel(
 export async function deleteChannel(
   id: string,
 ): Promise<{ success: boolean }> {
-  return apiRequest<{ success: boolean }>(
+  return apiRequest<{
+    success: boolean;
+  }>(
     `/api/channels/${id}`,
     {
       method: "DELETE",
@@ -112,7 +121,9 @@ export async function sendChannelMessage(
     `/api/channels/${id}/messages`,
     {
       method: "POST",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({
+        content,
+      }),
     },
   );
 }

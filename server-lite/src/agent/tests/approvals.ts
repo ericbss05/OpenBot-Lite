@@ -1,11 +1,5 @@
 import { db } from "../../db";
 
-import type {
-  ApprovalDecision,
-  ApprovalRequest,
-  ApprovalStore,
-} from "../approvals/approvals";
-
 import { createAgentStore } from "../store";
 import { OpenAIProvider } from "../llm/openai";
 import { AgentRuntime } from "../runtime/runtime";
@@ -16,90 +10,75 @@ import { textAnalyzerTool } from "../tools/internal/text-analyzer";
 import { searchMemoryTool } from "../tools/internal/search-memory";
 import { createSubAgentTool } from "../tools/internal/create-sub-agent";
 
+import { createPostgresApprovalStore } from "../approvals/postgres-store";
+
 import { createTestGateway } from "./helpers/test-gateway";
 
 const AGENT_ID =
   process.env.TEST_AGENT_ID ?? "test-agent";
 
-class InMemoryApprovalStore
-  implements ApprovalStore
-{
-  private readonly requests = new Map<
-    string,
-    ApprovalRequest
-  >();
+async function createRuntime(): Promise<AgentRuntime> {
+  const agentStore =
+    createAgentStore(db);
 
-  private readonly decisions = new Map<
-    string,
-    ApprovalDecision
-  >();
+  const registry =
+    new ToolRegistry();
 
-  async create(
-    request: ApprovalRequest,
-  ): Promise<void> {
-    this.requests.set(request.id, request);
-  }
+  registry.register(
+    currentTimeTool,
+  );
 
-  async decide(
-    approvalId: string,
-    decision: ApprovalDecision,
-  ): Promise<void> {
-    this.decisions.set(approvalId, decision);
-  }
+  registry.register(
+    textAnalyzerTool,
+  );
 
-  async getDecision(
-    approvalId: string,
-  ): Promise<ApprovalDecision | null> {
-    return this.decisions.get(approvalId) ?? null;
-  }
+  registry.register(
+    searchMemoryTool,
+  );
 
-  getRequest(
-    approvalId: string,
-  ): ApprovalRequest | undefined {
-    return this.requests.get(approvalId);
-  }
-}
+  registry.register(
+    createSubAgentTool,
+  );
 
-function buildRegistry(): ToolRegistry {
-  const registry = new ToolRegistry();
-
-  registry.register(currentTimeTool);
-  registry.register(textAnalyzerTool);
-  registry.register(searchMemoryTool);
-  registry.register(createSubAgentTool);
-
-  return registry;
-}
-
-async function main(): Promise<void> {
-  const agentStore = createAgentStore(db);
-  const agent = await agentStore.get(AGENT_ID);
-
-  if (!agent) {
-    throw new Error(
-      `Agent "${AGENT_ID}" introuvable dans PostgreSQL.`,
+  const gateway =
+    createTestGateway(
+      registry,
     );
-  }
 
-  console.log("\nAgent :", agent.id);
-  console.log("Tools depuis AgentStore :", agent.tools);
+  const approvals =
+    createPostgresApprovalStore(
+      db,
+    );
 
-  const registry = buildRegistry();
-  const gateway = createTestGateway(registry);
-  const approvals = new InMemoryApprovalStore();
+  const llm =
+    new OpenAIProvider();
 
-  const llm = new OpenAIProvider();
-
-  const runtime = new AgentRuntime(
+  return new AgentRuntime(
     {
       llm,
       tools: registry,
       approvals,
       gateway,
       agents: agentStore,
+      actorId: "test-user",
     },
     10,
   );
+}
+
+async function testApprovalApproved(): Promise<void> {
+  console.log(
+    "\n========================================",
+  );
+  console.log(
+    "TEST 1 — APPROVAL APPROVED",
+  );
+  console.log(
+    "========================================\n",
+  );
+
+  const runtime =
+    await createRuntime();
 
   const mission = `
 Crée un sous-agent spécialisé dans l'analyse de textes.
@@ -111,99 +90,461 @@ Rôle : "Analyse les textes et fournit des statistiques."
 Utilise les outils disponibles pour accomplir cette mission.
 `.trim();
 
-  const initialState = await runtime.run(
-    AGENT_ID,
-    [
-      {
-        role: "user",
-        content: mission,
-      },
-    ],
+  console.log(
+    "Lancement du runtime...\n",
+  );
+
+  const state =
+    await runtime.run(
+      AGENT_ID,
+      [
+        {
+          role: "user",
+          content: mission,
+        },
+      ],
+    );
+
+  console.log(
+    "\nÉtat après runtime.run() :",
   );
 
   console.log(
-    "\nInitial :",
-    initialState.status,
-    initialState.pendingToolCall?.toolId ?? "aucun",
+    "Status :",
+    state.status,
+  );
+
+  console.log(
+    "Run ID :",
+    state.runId,
+  );
+
+  console.log(
+    "Approval ID :",
+    state.pendingApprovalId ??
+      "aucune",
+  );
+
+  console.log(
+    "Pending tool :",
+    state.pendingToolCall
+      ?.toolId ??
+      "aucun",
   );
 
   if (
-    initialState.status !== "waiting" ||
-    !initialState.pendingApprovalId
+    state.status !== "waiting"
   ) {
     throw new Error(
-      "Le runtime n'est pas en attente d'approbation.",
+      `Le runtime devrait être en attente. Status reçu : ${state.status}`,
+    );
+  }
+
+  if (
+    !state.pendingApprovalId
+  ) {
+    throw new Error(
+      "Aucune approval n'a été créée.",
+    );
+  }
+
+  if (
+    !state.pendingToolCall
+  ) {
+    throw new Error(
+      "Aucun tool call en attente.",
+    );
+  }
+
+  if (
+    state.pendingToolCall.toolId !==
+    "create_sub_agent"
+  ) {
+    throw new Error(
+      `Tool inattendu : ${state.pendingToolCall.toolId}`,
     );
   }
 
   const approvalId =
-    initialState.pendingApprovalId;
+    state.pendingApprovalId;
+
+  console.log(
+    "\n✅ Approval créée.",
+  );
+
+  console.log(
+    "Approbation de l'action...\n",
+  );
+
+  const resumedState =
+    await runtime.resume(
+      state,
+      "approved",
+    );
+
+  console.log(
+    "État après runtime.resume(..., approved) :",
+  );
+
+  console.log(
+    "Status :",
+    resumedState.status,
+  );
+
+  console.log(
+    "Pending approval :",
+    resumedState.pendingApprovalId ??
+      "aucune",
+  );
+
+  console.log(
+    "Pending tool :",
+    resumedState.pendingToolCall
+      ?.toolId ??
+      "aucun",
+  );
 
   const approval =
-    approvals.getRequest(approvalId);
+    await createPostgresApprovalStore(
+      db,
+    ).get(approvalId);
 
   if (!approval) {
     throw new Error(
-      "Demande d'approbation introuvable.",
+      "Approval introuvable après approbation.",
     );
   }
-
-  console.log(
-    "Approval :",
-    approval.toolId,
-    approval.arguments,
-  );
-
-  await approvals.decide(
-    approvalId,
-    "approved",
-  );
-
-  const finalState = await runtime.resume(
-    initialState,
-    "approved",
-  );
-
-  console.log(
-    "Final :",
-    finalState.status,
-  );
-
-  if (finalState.status !== "completed") {
-    throw new Error(
-      finalState.error ??
-        "Le runtime n'est pas terminé.",
-    );
-  }
-
-  const result =
-    finalState.toolResults.find(
-      (toolResult) =>
-        toolResult.toolId ===
-        "create_sub_agent",
-    );
 
   if (
-    !result ||
-    result.status !== "success"
+    approval.status !==
+    "approved"
   ) {
     throw new Error(
-      "create_sub_agent n'a pas été exécuté correctement.",
+      `L'approval devrait être approved. Status reçu : ${approval.status}`,
+    );
+  }
+
+  if (
+    resumedState.status ===
+    "waiting"
+  ) {
+    throw new Error(
+      "Le runtime est toujours en attente après approbation.",
+    );
+  }
+
+  if (
+    resumedState.pendingApprovalId
+  ) {
+    throw new Error(
+      "pendingApprovalId devrait être supprimé après approbation.",
+    );
+  }
+
+  if (
+    resumedState.pendingToolCall
+  ) {
+    throw new Error(
+      "pendingToolCall devrait être supprimé après approbation.",
+    );
+  }
+
+  const executed =
+    resumedState.toolResults.some(
+      (result) =>
+        result.toolId ===
+          "create_sub_agent" &&
+        result.status ===
+          "success",
+    );
+
+  if (!executed) {
+    throw new Error(
+      "Le tool create_sub_agent n'a pas été exécuté après approbation.",
     );
   }
 
   console.log(
-    "\n✅ Test approval réussi.",
+    "\n✅ APPROVAL APPROVED : SUCCÈS",
+  );
+
+  console.log(
+    "→ Approval enregistrée comme approved.",
+  );
+
+  console.log(
+    "→ Tool exécuté.",
+  );
+
+  console.log(
+    "→ Runtime sorti de l'état waiting.",
   );
 }
 
-main().catch((error) => {
-  console.error(
-    "\n❌",
-    error instanceof Error
-      ? error.message
-      : error,
+async function testApprovalRejected(): Promise<void> {
+  console.log(
+    "\n========================================",
+  );
+  console.log(
+    "TEST 2 — APPROVAL REJECTED",
+  );
+  console.log(
+    "========================================\n",
   );
 
-  process.exit(1);
-});
+  const runtime =
+    await createRuntime();
+
+  const mission = `
+Crée un sous-agent spécialisé dans l'analyse de textes.
+
+Nom : "Rejected Agent"
+
+Rôle : "Analyse les textes et fournit des statistiques."
+
+Utilise les outils disponibles pour accomplir cette mission.
+`.trim();
+
+  console.log(
+    "Lancement du runtime...\n",
+  );
+
+  const state =
+    await runtime.run(
+      AGENT_ID,
+      [
+        {
+          role: "user",
+          content: mission,
+        },
+      ],
+    );
+
+  console.log(
+    "\nÉtat après runtime.run() :",
+  );
+
+  console.log(
+    "Status :",
+    state.status,
+  );
+
+  console.log(
+    "Run ID :",
+    state.runId,
+  );
+
+  console.log(
+    "Approval ID :",
+    state.pendingApprovalId ??
+      "aucune",
+  );
+
+  console.log(
+    "Pending tool :",
+    state.pendingToolCall
+      ?.toolId ??
+      "aucun",
+  );
+
+  if (
+    state.status !== "waiting"
+  ) {
+    throw new Error(
+      `Le runtime devrait être en attente. Status reçu : ${state.status}`,
+    );
+  }
+
+  if (
+    !state.pendingApprovalId
+  ) {
+    throw new Error(
+      "Aucune approval n'a été créée.",
+    );
+  }
+
+  if (
+    !state.pendingToolCall
+  ) {
+    throw new Error(
+      "Aucun tool call en attente.",
+    );
+  }
+
+  if (
+    state.pendingToolCall.toolId !==
+    "create_sub_agent"
+  ) {
+    throw new Error(
+      `Tool inattendu : ${state.pendingToolCall.toolId}`,
+    );
+  }
+
+  const approvalId =
+    state.pendingApprovalId;
+
+  console.log(
+    "\n✅ Approval créée.",
+  );
+
+  console.log(
+    "Rejet de l'action...\n",
+  );
+
+  const resumedState =
+    await runtime.resume(
+      state,
+      "rejected",
+    );
+
+  console.log(
+    "État après runtime.resume(..., rejected) :",
+  );
+
+  console.log(
+    "Status :",
+    resumedState.status,
+  );
+
+  console.log(
+    "Error :",
+    resumedState.error ??
+      "aucune",
+  );
+
+  const approval =
+    await createPostgresApprovalStore(
+      db,
+    ).get(approvalId);
+
+  if (!approval) {
+    throw new Error(
+      "Approval introuvable après rejet.",
+    );
+  }
+
+  if (
+    approval.status !==
+    "rejected"
+  ) {
+    throw new Error(
+      `L'approval devrait être rejected. Status reçu : ${approval.status}`,
+    );
+  }
+
+  if (
+    resumedState.status !==
+    "failed"
+  ) {
+    throw new Error(
+      `Le runtime devrait être failed après rejet. Status reçu : ${resumedState.status}`,
+    );
+  }
+
+  if (
+    resumedState.toolResults.some(
+      (result) =>
+        result.toolId ===
+          "create_sub_agent" &&
+        result.status ===
+          "success",
+    )
+  ) {
+    throw new Error(
+      "Le tool create_sub_agent ne doit PAS être exécuté après rejet.",
+    );
+  }
+
+  if (
+    resumedState.pendingApprovalId
+  ) {
+    throw new Error(
+      "pendingApprovalId devrait être supprimé après rejet.",
+    );
+  }
+
+  if (
+    resumedState.pendingToolCall
+  ) {
+    throw new Error(
+      "pendingToolCall devrait être supprimé après rejet.",
+    );
+  }
+
+  console.log(
+    "\n✅ APPROVAL REJECTED : SUCCÈS",
+  );
+
+  console.log(
+    "→ Approval enregistrée comme rejected.",
+  );
+
+  console.log(
+    "→ Tool non exécuté.",
+  );
+
+  console.log(
+    "→ Runtime terminé en failed.",
+  );
+}
+
+async function main(): Promise<void> {
+  console.log(
+    "\n========================================",
+  );
+  console.log(
+    "       APPROVAL SYSTEM TEST SUITE",
+  );
+  console.log(
+    "========================================\n",
+  );
+
+  const agentStore =
+    createAgentStore(db);
+
+  const agent =
+    await agentStore.get(
+      AGENT_ID,
+    );
+
+  if (!agent) {
+    throw new Error(
+      `Agent "${AGENT_ID}" introuvable dans PostgreSQL.`,
+    );
+  }
+
+  console.log(
+    "Agent :",
+    agent.id,
+  );
+
+  console.log(
+    "Tools depuis AgentStore :",
+    agent.tools,
+  );
+
+  await testApprovalApproved();
+
+  await testApprovalRejected();
+
+  console.log(
+    "\n========================================",
+  );
+  console.log(
+    "✅ TOUS LES TESTS APPROVAL PASSENT",
+  );
+  console.log(
+    "========================================\n",
+  );
+}
+
+main().catch(
+  (error) => {
+    console.error(
+      "\n❌ APPROVAL TEST FAILED\n",
+      error,
+    );
+
+    process.exit(1);
+  },
+);

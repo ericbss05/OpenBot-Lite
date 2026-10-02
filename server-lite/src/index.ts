@@ -34,11 +34,23 @@ import { createRoutineStore } from "./routines/store";
 import { createTurnRunner } from "./work/runner";
 import { createWorkQueue } from "./work/queue";
 
+import { ToolAuthorizationService } from "./agent/authorization";
+
+import { createToolStore } from "./tools/store";
+import { createAgentToolRoutes } from "./tools/agent-tools/routes";
+
+import {
+  createPostgresApprovalStore,
+} from "./agent/approvals/postgres-store";
+
 const config = loadConfig();
 
 // --------------------------------------------------
 // Agent profiles
 // --------------------------------------------------
+
+const approvals =
+  createPostgresApprovalStore(db);
 
 const agents = createAgentStore(
   db,
@@ -110,12 +122,18 @@ const gateway =
 
 await gateway.start();
 
+const authorization =
+  new ToolAuthorizationService(
+    db,
+  );
+
 const gatewayExecutor =
   new GatewayExecutor(
     tools,
     toolExecutor,
     gateway,
     audit,
+    authorization,
   );
 
 // --------------------------------------------------
@@ -129,14 +147,13 @@ const queue =
 // Runtime factory
 // --------------------------------------------------
 
-function createRuntime(
-  actorId: string,
-) {
+function createRuntime(actorId: string) {
   return new AgentRuntime({
     llm,
     tools,
     gateway: gatewayExecutor,
     agents: runtimeAgents,
+    approvals,
     actorId,
   });
 }
@@ -158,9 +175,22 @@ const plugins =
 const turnRunner =
   createTurnRunner({
     queue,
+
+    // Le TurnRunner a besoin du store directement
+    // car il utilise getOwned(), history() et
+    // appendMessage().
     channels: channelStore,
-    createRuntime,
+
     audit,
+
+    llm,
+
+    tools,
+
+    getAgent: (agentId) =>
+      runtimeAgents.get(agentId),
+
+    createRuntime,
   });
 
 turnRunner.start();
@@ -182,6 +212,15 @@ routineRunner.start();
 // HTTP application
 // --------------------------------------------------
 
+const toolStore =
+  createToolStore(db);
+
+const agentToolRoutes =
+  createAgentToolRoutes(
+    db,
+    agents,
+  );
+
 const app =
   createApp({
     config,
@@ -193,6 +232,8 @@ const app =
     queue,
     routines,
     plugins,
+    tools: toolStore,
+    agentTools: agentToolRoutes,
   });
 
 // --------------------------------------------------

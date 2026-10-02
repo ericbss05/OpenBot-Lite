@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -12,58 +13,73 @@ import {
   type ChannelMessage,
 } from "@/lib/api/channels";
 
+const POLL_INTERVAL_MS = 700;
+const MAX_POLL_ATTEMPTS = 30;
+
 export function useChannelMessages(
   channelId: string,
 ) {
-  const [messages, setMessages] = useState<
-    ChannelMessage[]
-  >([]);
-  const [loading, setLoading] = useState(true);
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(
-    null,
-  );
+  const [messages, setMessages] =
+    useState<ChannelMessage[]>([]);
 
-  const refresh = useCallback(async () => {
-    if (!channelId) return;
+  const [loading, setLoading] =
+    useState(true);
 
-    setLoading(true);
-    setError(null);
+  const [sending, setSending] =
+    useState(false);
 
-    try {
-      const data = await getChannelMessages(
-        channelId,
-      );
+  const [error, setError] =
+    useState<string | null>(null);
 
-      setMessages(data);
-    } catch (error) {
-      setError(
-        error instanceof Error
-          ? error.message
-          : "Failed to load messages",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [channelId]);
+  const pollingRef =
+    useRef(false);
 
-  useEffect(() => {
-    if (!channelId) return;
+  const refresh =
+    useCallback(async () => {
+      if (!channelId) {
+        return [];
+      }
 
-    let cancelled = false;
-
-    const load = async () => {
-      try {
-        const data = await getChannelMessages(
+      const data =
+        await getChannelMessages(
           channelId,
         );
 
-        if (cancelled) return;
+      setMessages(data);
+
+      return data;
+    }, [channelId]);
+
+  // ------------------------------------------------------------
+  // Initial load
+  // ------------------------------------------------------------
+
+  useEffect(() => {
+    if (!channelId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function load() {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const data =
+          await getChannelMessages(
+            channelId,
+          );
+
+        if (cancelled) {
+          return;
+        }
 
         setMessages(data);
-        setError(null);
       } catch (error) {
-        if (cancelled) return;
+        if (cancelled) {
+          return;
+        }
 
         setError(
           error instanceof Error
@@ -75,7 +91,7 @@ export function useChannelMessages(
           setLoading(false);
         }
       }
-    };
+    }
 
     void load();
 
@@ -84,38 +100,166 @@ export function useChannelMessages(
     };
   }, [channelId]);
 
-  const send = useCallback(
-    async (content: string) => {
-      const value = content.trim();
+  // ------------------------------------------------------------
+  // Poll until a new assistant message appears
+  // ------------------------------------------------------------
 
-      if (!value || sending) return;
+  const waitForAssistantResponse =
+    useCallback(
+      async (
+        previousMessageCount: number,
+      ) => {
+        if (!channelId) {
+          return;
+        }
 
-      setSending(true);
-      setError(null);
+        if (pollingRef.current) {
+          return;
+        }
 
-      try {
-        const result = await sendChannelMessage(
-          channelId,
-          value,
-        );
+        pollingRef.current = true;
 
-        await refresh();
+        try {
+          for (
+            let attempt = 0;
+            attempt < MAX_POLL_ATTEMPTS;
+            attempt += 1
+          ) {
+            await new Promise<void>(
+              (resolve) => {
+                setTimeout(
+                  resolve,
+                  POLL_INTERVAL_MS,
+                );
+              },
+            );
 
-        return result;
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "Failed to send message";
+            const data =
+              await getChannelMessages(
+                channelId,
+              );
 
-        setError(message);
-        throw error;
-      } finally {
-        setSending(false);
-      }
-    },
-    [channelId, refresh, sending],
-  );
+            setMessages(data);
+
+            /*
+             * On attend qu'un nouveau message
+             * assistant apparaisse.
+             *
+             * Le message utilisateur est déjà
+             * présent dans l'historique après POST.
+             */
+            const hasNewMessage =
+              data.length >
+              previousMessageCount;
+
+            const hasAssistantMessage =
+              data
+                .slice(previousMessageCount)
+                .some(
+                  (message) =>
+                    message.role ===
+                    "assistant",
+                );
+
+            if (
+              hasNewMessage &&
+              hasAssistantMessage
+            ) {
+              return;
+            }
+          }
+        } finally {
+          pollingRef.current = false;
+        }
+      },
+      [channelId],
+    );
+
+  // ------------------------------------------------------------
+  // Send
+  // ------------------------------------------------------------
+
+  const send =
+    useCallback(
+      async (content: string) => {
+        const value =
+          content.trim();
+
+        if (
+          !value ||
+          sending ||
+          !channelId
+        ) {
+          return;
+        }
+
+        setSending(true);
+        setError(null);
+
+        try {
+          /*
+           * On récupère le nombre de messages
+           * AVANT l'envoi.
+           */
+          const before =
+            await getChannelMessages(
+              channelId,
+            );
+
+          setMessages(before);
+
+          /*
+           * Le backend ajoute immédiatement
+           * le message utilisateur puis met
+           * le traitement agent dans la queue.
+           */
+          const result =
+            await sendChannelMessage(
+              channelId,
+              value,
+            );
+
+          /*
+           * On recharge immédiatement pour
+           * afficher le message utilisateur.
+           */
+          const afterSend =
+            await getChannelMessages(
+              channelId,
+            );
+
+          setMessages(afterSend);
+
+          /*
+           * Le worker fonctionne en arrière-plan.
+           *
+           * On attend donc que sa réponse
+           * assistant apparaisse réellement.
+           */
+          await waitForAssistantResponse(
+            afterSend.length,
+          );
+
+          return result;
+        } catch (error) {
+          const message =
+            error instanceof Error
+              ? error.message
+              : "Failed to send message";
+
+          setError(message);
+
+          throw error;
+        } finally {
+          setSending(false);
+        }
+      },
+      [
+        channelId,
+        sending,
+        waitForAssistantResponse,
+      ],
+    );
 
   return {
     messages,

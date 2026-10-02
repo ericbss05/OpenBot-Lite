@@ -6,21 +6,48 @@ export interface ApprovalRequest {
   toolCallId: string;
   toolId: string;
   arguments: Record<string, unknown>;
+  actorId: string;
 }
 
-export type ApprovalDecision = "approved" | "rejected";
+export interface ApprovalRecord
+  extends ApprovalRequest {
+  status: ApprovalStatus;
+  createdAt: Date;
+  decidedAt?: Date;
+}
+
+export type ApprovalStatus =
+  | "pending"
+  | "approved"
+  | "rejected";
+
+export type ApprovalDecision =
+  | "approved"
+  | "rejected";
 
 export interface ApprovalStore {
-  create(request: ApprovalRequest): Promise<void>;
+  create(
+    request: ApprovalRequest,
+  ): Promise<void>;
+
+  get(
+    approvalId: string,
+  ): Promise<ApprovalRecord | null>;
+
   decide(
     approvalId: string,
     decision: ApprovalDecision,
   ): Promise<void>;
+
   getDecision(
     approvalId: string,
   ): Promise<ApprovalDecision | null>;
 }
 
-export function requiresApproval(tool: Tool): boolean {
-  return tool.definition.requiresApproval === true;
+export function requiresApproval(
+  tool: Tool,
+): boolean {
+  return (
+    tool.definition.requiresApproval === true
+  );
 }

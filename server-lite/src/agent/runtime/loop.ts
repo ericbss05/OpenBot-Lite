@@ -1,8 +1,6 @@
 import type { AgentEventSink } from "../events/events";
 import type { LLMProvider } from "../llm/provider";
-import type {
-  ApprovalStore,
-} from "../approvals/approvals";
+import type { ApprovalStore } from "../approvals/approvals";
 import {
   ToolRegistry,
   type ToolCall,
@@ -14,27 +12,26 @@ import type { RuntimeState } from "./state";
 export interface RuntimeDependencies {
   llm: LLMProvider;
   tools: ToolRegistry;
-
-  /**
-   * Gateway obligatoire pour toutes les exécutions
-   * de tools.
-   */
   gateway: GatewayExecutor;
-
   approvals?: ApprovalStore;
   events?: AgentEventSink;
-
-  /**
-   * Identité de l'utilisateur qui déclenche le run.
-   */
   actorId?: string;
 }
+
+type ExecutionStatus =
+  | "executed"
+  | "approval_required"
+  | "denied";
 
 export class RuntimeLoop {
   constructor(
     private readonly dependencies: RuntimeDependencies,
   ) {}
 
+  /**
+   * Ancien flux conservé temporairement pour AgentRuntime.resume().
+   * Le nouveau flux passe par executeTool().
+   */
   async run(
     state: RuntimeState,
   ): Promise<RuntimeState> {
@@ -45,78 +42,30 @@ export class RuntimeLoop {
     );
 
     try {
-      // --------------------------------------------------
-      // Reprise après approval
-      // --------------------------------------------------
-
       if (state.pendingToolCall) {
-        const pendingCall =
-          state.pendingToolCall;
-
-        /*
-         * Le ToolCall a déjà été approuvé par le Runtime.
-         *
-         * On transmet donc approvalGranted=true au Gateway.
-         *
-         * IMPORTANT :
-         * cela ne désactive PAS la policy du Gateway.
-         * Cela indique uniquement que le contrôle
-         * d'approbation utilisateur a déjà été effectué.
-         */
         const execution =
-          await this.executeThroughGateway(
+          await this.executeTool(
             state,
-            history,
-            pendingCall,
+            state.pendingToolCall,
             true,
           );
 
-        if (
-          execution === "waiting"
-        ) {
-          return state;
+        if (execution.status === "approval_required") {
+  return state;
         }
 
-        if (
-          execution === "denied"
-        ) {
-          state.pendingToolCall =
-            undefined;
-
-          state.pendingApprovalId =
-            undefined;
-
-          state.status = "failed";
-
-          state.error =
-            "Tool execution denied by Gateway.";
-
-          await this.dependencies.events?.emit({
-            type: "agent.failed",
-            runId: state.runId,
-            error: state.error,
-          });
-
-          return state;
+        if (execution.status === "denied") {
+          return this.fail(
+            state,
+            "Tool execution denied by Gateway.",
+          );
         }
 
-        /*
-         * Le ToolCall approuvé a maintenant été exécuté.
-         */
-        state.pendingToolCall =
-          undefined;
-
-        state.pendingApprovalId =
-          undefined;
+        state.pendingToolCall = undefined;
+        state.pendingApprovalId = undefined;
       }
 
-      // --------------------------------------------------
-      // Boucle principale
-      // --------------------------------------------------
-
-      while (
-        state.turn < state.maxTurns
-      ) {
+      while (state.turn < state.maxTurns) {
         state.turn += 1;
 
         await this.dependencies.events?.emit({
@@ -124,41 +73,27 @@ export class RuntimeLoop {
           runId: state.runId,
         });
 
-        console.log("[RUNTIME] tools available:", state.agent.tools);
         const response =
           await this.dependencies.llm.generate({
             agent: state.agent,
-
-            messages:
-              history.getMessages(),
-
-            tools:
-              this.dependencies.tools.list(
-                state.agent.tools,
-              ),
+            messages: history.getMessages(),
+            tools: this.dependencies.tools.list(
+              state.agent.tools,
+            ),
           });
-console.log("[RUNTIME] LLM response:", response);
 
         await this.dependencies.events?.emit({
           type: "llm.completed",
           runId: state.runId,
         });
 
-        // ------------------------------------------------
-        // Réponse finale
-        // ------------------------------------------------
-
-        if (
-          response.type === "text"
-        ) {
+        if (response.type === "text") {
           history.addAssistantMessage(
             response.content,
           );
 
           state.status = "completed";
-
-          state.result =
-            response.content;
+          state.result = response.content;
 
           await this.dependencies.events?.emit({
             type: "agent.completed",
@@ -169,102 +104,86 @@ console.log("[RUNTIME] LLM response:", response);
           return state;
         }
 
-        // ------------------------------------------------
-        // Tool calls
-        // ------------------------------------------------
-
-        /*
-         * IMPORTANT :
-         * Les tool calls de l'assistant sont ajoutés
-         * à l'historique AVANT leur exécution.
-         */
         history.addAssistantToolCalls(
           response.calls,
         );
 
-        for (
-          const call of response.calls
-        ) {
+        for (const call of response.calls) {
           const execution =
-            await this.executeThroughGateway(
+            await this.executeTool(
               state,
-              history,
               call,
-              false,
             );
 
-          // ----------------------------------------------
-          // Approval demandée
-          // ----------------------------------------------
+          if (execution.status === "approval_required") {
+  return state;
+}
 
-          if (
-            execution === "waiting"
-          ) {
-            return state;
+          if (execution.status === "denied") {
+            history.addToolResult(call.id, {
+              error:
+                execution.reason ??
+                "Tool execution denied by Gateway.",
+            });
+            continue;
           }
 
-          // ----------------------------------------------
-          // Tool refusé
-          // ----------------------------------------------
+          if (execution.result) {
+            const output =
+              execution.result.status ===
+              "success"
+                ? execution.result.output
+                : {
+                    error:
+                      execution.result.error,
+                  };
 
-          if (
-            execution === "denied"
-          ) {
             history.addToolResult(
               call.id,
-              {
-                error:
-                  "Tool execution denied by Gateway.",
-              },
+              output,
             );
-
-            continue;
           }
         }
       }
 
-      // --------------------------------------------------
-      // Max turns
-      // --------------------------------------------------
-
-      state.status = "failed";
-
-      state.error =
-        `Maximum turns exceeded: ${state.maxTurns}`;
-
-      await this.dependencies.events?.emit({
-        type: "agent.failed",
-        runId: state.runId,
-        error: state.error,
-      });
-
-      return state;
+      return this.fail(
+        state,
+        `Maximum turns exceeded: ${state.maxTurns}`,
+      );
     } catch (error) {
-      state.status = "failed";
-
-      state.error =
+      return this.fail(
+        state,
         error instanceof Error
           ? error.message
-          : "Unknown runtime error";
-
-      await this.dependencies.events?.emit({
-        type: "agent.failed",
-        runId: state.runId,
-        error: state.error,
-      });
-
-      return state;
+          : "Unknown runtime error",
+      );
     }
   }
 
-  private async executeThroughGateway(
+  /**
+   * Nouveau point d'entrée du Runtime.
+   *
+   * Le LLM décide de l'action.
+   * Le Runtime ne fait qu'exécuter cette action
+   * via le Gateway.
+   */
+  async executeTool(
     state: RuntimeState,
-    history: RuntimeHistory,
     call: ToolCall,
     approvalGranted = false,
-  ): Promise<
-    "executed" | "waiting" | "denied"
-  > {
+  ): Promise<{
+    status: ExecutionStatus;
+    toolCall: ToolCall;
+    approvalId?: string;
+    result?: {
+      toolCallId: string;
+      toolId: string;
+      status: "success" | "error";
+      output?: unknown;
+      error?: string;
+    };
+    reason?: string;
+  }> {
     await this.dependencies.events?.emit({
       type: "tool.started",
       runId: state.runId,
@@ -272,46 +191,36 @@ console.log("[RUNTIME] LLM response:", response);
       toolId: call.toolId,
     });
 
-    console.log("[TOOL] executing:", {
-  toolId: call.toolId,
-  arguments: call.arguments,
-});
-    const result =
+    console.log("[RUNTIME] executing tool:", {
+      runId: state.runId,
+      toolId: call.toolId,
+      arguments: call.arguments,
+      approvalGranted,
+    });
+
+    const gatewayResult =
       await this.dependencies.gateway.execute({
         context: {
           runId: state.runId,
-
           actorId:
             this.dependencies.actorId ??
             "system",
-
           botId: state.agent.id,
         },
-
         toolCall: call,
-
-        /*
-         * false :
-         * première exécution, le Gateway peut demander
-         * une approbation.
-         *
-         * true :
-         * reprise d'un ToolCall déjà approuvé.
-         */
         approvalGranted,
       });
-console.log("[TOOL] gateway result:", result);
-    // --------------------------------------------------
-    // Approval
-    // --------------------------------------------------
+
+    console.log(
+      "[RUNTIME] gateway result:",
+      gatewayResult,
+    );
 
     if (
-      result.status ===
-        "approval_required"
+      gatewayResult.status ===
+      "approval_required"
     ) {
-      if (
-        !this.dependencies.approvals
-      ) {
+      if (!this.dependencies.approvals) {
         throw new Error(
           `Tool "${call.toolId}" requires approval but no ApprovalStore is configured.`,
         );
@@ -326,14 +235,12 @@ console.log("[TOOL] gateway result:", result);
         toolCallId: call.id,
         toolId: call.toolId,
         arguments: call.arguments,
+        actorId:
+          this.dependencies.actorId ?? "",
       });
 
-      state.pendingApprovalId =
-        approvalId;
-
-      state.pendingToolCall =
-        call;
-
+      state.pendingApprovalId = approvalId;
+      state.pendingToolCall = call;
       state.status = "waiting";
 
       await this.dependencies.events?.emit({
@@ -343,16 +250,15 @@ console.log("[TOOL] gateway result:", result);
         toolCallId: call.id,
       });
 
-      return "waiting";
+      return {
+        status: "approval_required",
+        toolCall: call,
+        approvalId,
+        reason: gatewayResult.reason,
+      };
     }
 
-    // --------------------------------------------------
-    // Denied
-    // --------------------------------------------------
-
-    if (
-      result.status === "denied"
-    ) {
+    if (gatewayResult.status === "denied") {
       await this.dependencies.events?.emit({
         type: "tool.completed",
         runId: state.runId,
@@ -361,51 +267,51 @@ console.log("[TOOL] gateway result:", result);
         status: "error",
       });
 
-      return "denied";
+      return {
+        status: "denied",
+        toolCall: call,
+        reason: gatewayResult.reason,
+      };
     }
 
-    // --------------------------------------------------
-    // Executed
-    // --------------------------------------------------
-
-    if (!result.result) {
+    if (!gatewayResult.result) {
       throw new Error(
         `Gateway returned executed status without a result for tool "${call.toolId}".`,
       );
     }
 
-    const toolResult =
-      result.result;
+    const result = gatewayResult.result;
 
-    state.toolResults.push(
-      toolResult,
-    );
-
-    const content =
-      toolResult.status === "success"
-        ? toolResult.output
-        : {
-            error:
-              toolResult.error,
-          };
-
-    /*
-     * Le résultat du tool est ajouté après
-     * l'exécution effective.
-     */
-    history.addToolResult(
-      call.id,
-      content,
-    );
+    state.toolResults.push(result);
 
     await this.dependencies.events?.emit({
       type: "tool.completed",
       runId: state.runId,
       toolCallId: call.id,
       toolId: call.toolId,
-      status: toolResult.status,
+      status: result.status,
     });
 
-    return "executed";
+    return {
+      status: "executed",
+      toolCall: call,
+      result,
+    };
+  }
+
+  private async fail(
+    state: RuntimeState,
+    error: string,
+  ): Promise<RuntimeState> {
+    state.status = "failed";
+    state.error = error;
+
+    await this.dependencies.events?.emit({
+      type: "agent.failed",
+      runId: state.runId,
+      error,
+    });
+
+    return state;
   }
 }

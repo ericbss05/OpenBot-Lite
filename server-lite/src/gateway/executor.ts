@@ -12,12 +12,15 @@ import {
 
 import { requiresApproval } from "../agent/approvals/approvals";
 
+import type { ToolAuthorizer } from "../agent/authorization";
+
 export class GatewayExecutor {
   constructor(
     private readonly registry: ToolRegistry,
     private readonly executor: ToolExecutor,
     private readonly gateway: Gateway,
     private readonly audit: AuditStore,
+    private readonly authorization: ToolAuthorizer,
   ) {}
 
   async execute(
@@ -46,6 +49,50 @@ export class GatewayExecutor {
           botId: context.botId,
           toolId: toolCall.toolId,
           toolCallId: toolCall.id,
+          reason,
+        },
+      );
+
+      return {
+        status: "denied",
+        toolCall,
+        reason,
+      };
+    }
+
+    /*
+     * Authorization :
+     *
+     * Vérifie que l'agent possède réellement
+     * le droit d'utiliser ce tool.
+     *
+     * Primary agent :
+     *   accès à tous les tools du Tool Catalog.
+     *
+     * Sub-agent :
+     *   accès uniquement aux tools présents
+     *   dans agent_tools.
+     */
+    const authorizationResult =
+      await this.authorization.authorize(
+        context.botId,
+        toolCall.toolId,
+      );
+
+    if (!authorizationResult.allowed) {
+      const reason =
+        authorizationResult.reason ??
+        "Agent is not authorized to use this tool.";
+
+      await this.audit.record(
+        "tool.denied",
+        context.actorId,
+        {
+          runId: context.runId,
+          botId: context.botId,
+          toolId: toolCall.toolId,
+          toolCallId: toolCall.id,
+          arguments: toolCall.arguments,
           reason,
         },
       );
