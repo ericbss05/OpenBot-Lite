@@ -7,6 +7,8 @@ import {
   ToolExecutor,
   ToolRegistry,
 } from "./agent/tools/tools";
+import { calculatorTool } from "./agent/tools/internal/calculator";
+import { createSubAgentTool } from "./agent/tools/internal/create-sub-agent";
 
 import { createAgentStore } from "./agent-profiles/store";
 import { createApp } from "./app";
@@ -49,22 +51,30 @@ await agents.syncFromYaml("agents.yaml");
 // Runtime dependencies
 // --------------------------------------------------
 
-// Store utilisé par AgentRuntime.
-// Attention : ce n'est PAS le même AgentStore
-// que celui utilisé par l'API CRUD.
 const runtimeAgents =
   createRuntimeAgentStore(db);
 
+// --------------------------------------------------
 // LLM
+// --------------------------------------------------
+
 const llm =
   new OpenAIProvider();
 
+// --------------------------------------------------
 // Tools
-//
-// Pour l'instant le registry est vide.
-// Les tools seront enregistrés ici au fur et à mesure.
+// --------------------------------------------------
+
 const tools =
   new ToolRegistry();
+
+tools.register(
+  calculatorTool,
+);
+
+tools.register(
+  createSubAgentTool,
+);
 
 const toolExecutor =
   new ToolExecutor(tools);

@@ -124,6 +124,7 @@ export class RuntimeLoop {
           runId: state.runId,
         });
 
+        console.log("[RUNTIME] tools available:", state.agent.tools);
         const response =
           await this.dependencies.llm.generate({
             agent: state.agent,
@@ -136,6 +137,7 @@ export class RuntimeLoop {
                 state.agent.tools,
               ),
           });
+console.log("[RUNTIME] LLM response:", response);
 
         await this.dependencies.events?.emit({
           type: "llm.completed",
@@ -270,6 +272,10 @@ export class RuntimeLoop {
       toolId: call.toolId,
     });
 
+    console.log("[TOOL] executing:", {
+  toolId: call.toolId,
+  arguments: call.arguments,
+});
     const result =
       await this.dependencies.gateway.execute({
         context: {
@@ -294,7 +300,7 @@ export class RuntimeLoop {
          */
         approvalGranted,
       });
-
+console.log("[TOOL] gateway result:", result);
     // --------------------------------------------------
     // Approval
     // --------------------------------------------------

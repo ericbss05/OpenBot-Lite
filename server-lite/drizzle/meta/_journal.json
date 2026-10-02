@@ -57,6 +57,27 @@
       "when": 1790888486094,
       "tag": "0007_nifty_sasquatch",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790931912804,
+      "tag": "0008_good_falcon",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790932885438,
+      "tag": "0009_flippant_darkstar",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790933908865,
+      "tag": "0010_bizarre_ink",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,11 @@
 import { eq } from "drizzle-orm";
 
 import type { Db } from "../db";
-import { agentProfiles } from "../db/schema";
+import {
+  agentProfiles,
+  agentTools,
+  toolCatalog,
+} from "../db/schema";
 
 import type {
   Agent,
@@ -24,6 +28,8 @@ export function createAgentStore(
           roleDescription:
             agentProfiles.roleDescription,
           model: agentProfiles.model,
+          isPrimary:
+            agentProfiles.isPrimary,
         })
         .from(agentProfiles)
         .where(
@@ -38,13 +44,42 @@ export function createAgentStore(
         return null;
       }
 
+      const tools = row.isPrimary
+        ? await db
+            .select({
+              toolId: toolCatalog.id,
+            })
+            .from(toolCatalog)
+        : await db
+            .select({
+              toolId: toolCatalog.id,
+            })
+            .from(agentTools)
+            .innerJoin(
+              toolCatalog,
+              eq(
+                agentTools.toolId,
+                toolCatalog.id,
+              ),
+            )
+            .where(
+              eq(
+                agentTools.agentId,
+                agentId,
+              ),
+            );
+
       return {
         id: row.id,
         name: row.name,
         instructions:
           row.roleDescription ?? "",
         model: row.model,
-        tools: [],
+
+        tools: tools.map(
+          (tool) => tool.toolId,
+        ),
+
         subAgents: [],
       };
     },

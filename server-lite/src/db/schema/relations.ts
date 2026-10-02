@@ -24,6 +24,10 @@ import {
   auditEvents,
 } from "./audit";
 
+import {
+  toolCatalog,
+  agentTools,
+} from "./tools";
 // ============================================================
 // User
 // ============================================================
@@ -95,6 +99,8 @@ export const agentProfileRelations =
       ),
 
       routines: many(routines),
+
+      tools: many(agentTools),
     }),
   );
 
@@ -220,5 +226,45 @@ export const auditEventRelations =
         ],
         references: [user.id],
       }),
+    }),
+  );
+
+  // ============================================================
+// Agent Tool
+// ============================================================
+
+export const agentToolRelations =
+  relations(
+    agentTools,
+    ({ one }) => ({
+      agent: one(agentProfiles, {
+        fields: [
+          agentTools.agentId,
+        ],
+        references: [
+          agentProfiles.id,
+        ],
+      }),
+
+      tool: one(toolCatalog, {
+        fields: [
+          agentTools.toolId,
+        ],
+        references: [
+          toolCatalog.id,
+        ],
+      }),
+    }),
+  );
+
+  // ============================================================
+// Tool Catalog
+// ============================================================
+
+export const toolCatalogRelations =
+  relations(
+    toolCatalog,
+    ({ many }) => ({
+      agents: many(agentTools),
     }),
   );

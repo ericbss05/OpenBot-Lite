@@ -1,0 +1,1 @@
+ALTER TABLE "agent_profiles" ADD COLUMN "is_primary" boolean DEFAULT true NOT NULL;

@@ -222,6 +222,8 @@ async function create(
 
     visibility: "private" as const,
 
+    isPrimary: true,
+    
     endpoint,
 
     avatarPalette:

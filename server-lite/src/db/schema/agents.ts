@@ -22,18 +22,22 @@ export const agentProfiles = pgTable(
       text("role_description"),
 
     model: text("model")
-      .notNull()
-      .default("gpt-6-luna"),
+  .notNull()
+  .default("gpt-6-luna"),
 
-    visibility: text("visibility", {
-      enum: ["public", "private"],
-    }).notNull(),
+visibility: text("visibility", {
+  enum: ["public", "private"],
+}).notNull(),
 
-    endpoint: text("endpoint"),
+isPrimary: boolean("is_primary")
+  .notNull()
+  .default(true),
 
-    avatarPalette: integer("avatar_palette")
-      .notNull()
-      .default(0),
+endpoint: text("endpoint"),
+
+avatarPalette: integer("avatar_palette")
+  .notNull()
+  .default(0),
 
     avatarReversed: boolean("avatar_reversed")
       .notNull()
