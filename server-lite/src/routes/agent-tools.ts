@@ -1,9 +1,9 @@
 import { Hono } from "hono";
 
-import type { AgentStore } from "../../agent-profiles/store";
-import type { AppVariables } from "../../auth/guards";
-import { requireUser } from "../../auth/guards";
-import { createAgentToolStore } from "./store";
+import type { AgentStore } from "../agent-profiles/store";
+import type { AppVariables } from "../auth/guards";
+import { requireUser } from "../auth/guards";
+import { createAgentToolStore } from "../tools/agent-tools/store";
 
 export function createAgentToolRoutes(
   db: Parameters<typeof createAgentToolStore>[0],

@@ -1,6 +1,7 @@
 import type { Agent } from "../agent";
 import type { LLMMessage, LLMToolCall } from "../llm/provider";
 import type { ToolResult } from "../tools/tools";
+import type { RunContext } from "../events/events";
 
 export type RuntimeStatus =
   | "pending"
@@ -16,6 +17,7 @@ export interface RuntimeState {
    */
   runId: string;
 
+  context: RunContext;
   /**
    * Agent exécuté pendant ce run.
    */

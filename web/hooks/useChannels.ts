@@ -20,10 +20,12 @@ export function useChannels() {
   const [channels, setChannels] = useState<
     Channel[]
   >([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(
-    null,
-  );
+
+  const [loading, setLoading] =
+    useState(true);
+
+  const [error, setError] =
+    useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -31,6 +33,7 @@ export function useChannels() {
 
     try {
       const data = await getChannels();
+
       setChannels(data);
     } catch (error) {
       setError(
@@ -78,7 +81,8 @@ export function useChannels() {
 
   const create = useCallback(
     async (input: CreateChannelInput) => {
-      const channel = await createChannel(input);
+      const channel =
+        await createChannel(input);
 
       setChannels((current) => [
         channel,
@@ -95,14 +99,14 @@ export function useChannels() {
       id: string,
       input: UpdateChannelInput,
     ) => {
-      const channel = await updateChannel(
-        id,
-        input,
-      );
+      const channel =
+        await updateChannel(id, input);
 
       setChannels((current) =>
         current.map((item) =>
-          item.id === id ? channel : item,
+          item.id === id
+            ? channel
+            : item,
         ),
       );
 
@@ -116,7 +120,9 @@ export function useChannels() {
       await deleteChannel(id);
 
       setChannels((current) =>
-        current.filter((item) => item.id !== id),
+        current.filter(
+          (item) => item.id !== id,
+        ),
       );
     },
     [],

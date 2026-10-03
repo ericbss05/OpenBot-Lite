@@ -2,7 +2,10 @@ import type {
   ApprovalDecision,
   ApprovalStore,
 } from "../approvals/approvals";
-import type { AgentEventSink } from "../events/events";
+import type {
+  AgentEventSink,
+  RunContext,
+} from "../events/events";
 import type {
   LLMMessage,
   LLMProvider,
@@ -21,6 +24,14 @@ export interface AgentRuntimeDependencies {
   agents: AgentStore;
   approvals?: ApprovalStore;
   events?: AgentEventSink;
+
+  /**
+   * Kept for compatibility with the current runtime
+   * construction and tests.
+   *
+   * The actual actor for a run comes from
+   * RunContext.actorId.
+   */
   actorId?: string;
 }
 
@@ -52,62 +63,72 @@ export class AgentRuntime {
     private readonly dependencies: AgentRuntimeDependencies,
     private readonly maxTurns = 10,
   ) {
-    this.loop = new RuntimeLoop(dependencies);
+    this.loop = new RuntimeLoop(
+      dependencies,
+    );
   }
 
   /**
-   * Nouveau point d'entrée du Runtime.
+   * Execute a single tool for an existing run context.
    *
-   * Le Runtime reçoit uniquement une action décidée
-   * par le LLM.
-   *
-   * Il ne décide pas quand appeler le LLM.
+   * AgentConversation uses this method when the LLM
+   * decides that a tool is required.
    */
   async executeTool(
-  runId: string,
-  agentId: string,
-  toolCall: LLMToolCall,
-  approvalGranted = false,
-): Promise<RuntimeToolExecution> {
-  const agent = await this.dependencies.agents.get(agentId);
+    context: RunContext,
+    toolCall: LLMToolCall,
+    approvalGranted = false,
+  ): Promise<RuntimeToolExecution> {
+    const agent =
+      await this.dependencies.agents.get(
+        context.agentId,
+      );
 
-  if (!agent) {
-    throw new Error(`Agent not found: ${agentId}`);
-  }
+    if (!agent) {
+      throw new Error(
+        `Agent not found: ${context.agentId}`,
+      );
+    }
 
-  return this.loop.executeTool(
-    {
-      runId,
+    const state: RuntimeState = {
+      runId: context.runId,
+      context,
       agent,
       status: "running",
       messages: [],
       turn: 0,
       maxTurns: 1,
       toolResults: [],
-    },
-    toolCall,
-    approvalGranted,
-  );
-}
+    };
+
+    return this.loop.executeTool(
+      state,
+      toolCall,
+      approvalGranted,
+    );
+  }
 
   /**
-   * Ancienne API conservée temporairement.
+   * Run the complete runtime loop.
    *
-   * Elle sera supprimée lorsque TurnRunner
-   * utilisera directement le nouveau flux :
+   * This is useful for runtime-driven workflows
+   * where the runtime itself owns the LLM loop.
    *
-   * LLM → tool_call → executeTool()
+   * AgentConversation remains the preferred path
+   * for normal channel conversations.
    */
   async run(
-    agentId: string,
+    context: RunContext,
     messages: LLMMessage[],
   ): Promise<RuntimeState> {
     const agent =
-      await this.dependencies.agents.get(agentId);
+      await this.dependencies.agents.get(
+        context.agentId,
+      );
 
     if (!agent) {
       throw new Error(
-        `Agent not found: ${agentId}`,
+        `Agent not found: ${context.agentId}`,
       );
     }
 
@@ -118,7 +139,8 @@ export class AgentRuntime {
     }
 
     const state: RuntimeState = {
-      runId: crypto.randomUUID(),
+      runId: context.runId,
+      context,
       agent,
       status: "pending",
       messages: [...messages],
@@ -127,120 +149,173 @@ export class AgentRuntime {
       toolResults: [],
     };
 
+    await this.dependencies.events?.emit({
+      type: "run.started",
+      context,
+    });
+
     return this.loop.run(state);
   }
 
   /**
-   * Ancienne API de reprise conservée temporairement.
-   *
-   * Elle sera adaptée lorsque l'état du Runtime
-   * sera entièrement séparé de l'état de conversation.
+   * Resume a runtime after an approval decision.
    */
   async resume(
-    state: RuntimeState,
-    decision: ApprovalDecision,
-  ): Promise<RuntimeState> {
-    if (state.status !== "waiting") {
-      throw new Error(
-        `Cannot resume runtime from status: ${state.status}`,
-      );
-    }
+state: RuntimeState,
+decision: ApprovalDecision,
+): Promise<RuntimeState> {
+if (state.status !== "waiting") {
+throw new Error(
+`Cannot resume runtime from status: ${state.status}`,
+);
+}
 
-    if (!state.pendingApprovalId) {
-      throw new Error("No pending approval");
-    }
+if (!state.pendingApprovalId) {
+throw new Error(
+"No pending approval",
+);
+}
 
-    if (!state.pendingToolCall) {
-      throw new Error("No pending tool call");
-    }
+if (!state.pendingToolCall) {
+throw new Error(
+"No pending tool call",
+);
+}
 
-    if (!this.dependencies.approvals) {
-      throw new Error(
-        "ApprovalStore is not configured.",
-      );
-    }
+if (!this.dependencies.approvals) {
+throw new Error(
+"ApprovalStore is not configured.",
+);
+}
 
-    const approvalId =
-      state.pendingApprovalId;
+const approvalId =
+state.pendingApprovalId;
 
-    const approval =
-      await this.dependencies.approvals.get(
-        approvalId,
-      );
+const approval =
+await this.dependencies.approvals.get(
+approvalId,
+);
 
-    if (!approval) {
-      throw new Error(
-        `Approval not found: ${approvalId}`,
-      );
-    }
+if (!approval) {
+throw new Error(
+`Approval not found: ${approvalId}`,
+);
+}
 
-    if (approval.runId !== state.runId) {
-      throw new Error(
-        "Approval does not belong to this run.",
-      );
-    }
+if (
+approval.runId !==
+state.context.runId
+) {
+throw new Error(
+"Approval does not belong to this run.",
+);
+}
 
-    if (
-      approval.toolCallId !==
-      state.pendingToolCall.id
-    ) {
-      throw new Error(
-        "Approval does not belong to the pending tool call.",
-      );
-    }
+if (
+approval.toolCallId !==
+state.pendingToolCall.id
+) {
+throw new Error(
+"Approval does not belong to the pending tool call.",
+);
+}
 
-    if (
-      approval.toolId !==
-      state.pendingToolCall.toolId
-    ) {
-      throw new Error(
-        "Approval does not belong to the pending tool.",
-      );
-    }
+if (
+approval.toolId !==
+state.pendingToolCall.toolId
+) {
+throw new Error(
+"Approval does not belong to the pending tool.",
+);
+}
 
-    if (
-      this.dependencies.actorId &&
-      approval.actorId !==
-        this.dependencies.actorId
-    ) {
-      throw new Error(
-        "Approval does not belong to this actor.",
-      );
-    }
+if (
+approval.actorId !==
+state.context.actorId
+) {
+throw new Error(
+"Approval does not belong to this actor.",
+);
+}
 
-    if (approval.status !== "pending") {
-      throw new Error(
-        `Approval is already decided: ${approval.status}`,
-      );
-    }
+if (
+approval.status !==
+"pending"
+) {
+throw new Error(
+`Approval is already decided: ${approval.status}`,
+);
+}
 
-    await this.dependencies.approvals.decide(
-      approvalId,
-      decision,
-    );
+await this.dependencies.approvals.decide(
+approvalId,
+decision,
+);
 
-    if (decision === "rejected") {
-      state.status = "failed";
-      state.error =
-        "Tool execution rejected";
-      state.pendingApprovalId = undefined;
-      state.pendingToolCall = undefined;
+await this.dependencies.events?.emit({
+type:
+decision === "approved"
+? "approval.approved"
+: "approval.rejected",
+context: state.context,
+approvalId,
+toolCallId: approval.toolCallId,
+toolId: approval.toolId,
+});
 
-      await this.dependencies.events?.emit({
-        type: "agent.failed",
-        runId: state.runId,
-        error: state.error,
-      });
+if (decision === "rejected") {
+  state.pendingApprovalId = undefined;
+  state.status = "running";
 
-      return state;
-    }
+  return state;
+}
 
-    state.pendingApprovalId = undefined;
-    state.status = "running";
+const toolCall = state.pendingToolCall;
 
-    return this.loop.run(state);
-  }
+const execution =
+await this.loop.executeTool(
+state,
+toolCall,
+true,
+);
 
+if (execution.status === "approval_required") {
+throw new Error(
+"Approved tool unexpectedly requires another approval.",
+);
+}
+
+if (execution.status === "denied") {
+state.status = "failed";
+state.error =
+execution.reason ??
+"Tool execution denied by Gateway.";
+
+
+state.pendingApprovalId = undefined;
+state.pendingToolCall = undefined;
+
+await this.dependencies.events?.emit({
+  type: "agent.failed",
+  context: state.context,
+  error: state.error,
+});
+
+return state;
+
+}
+
+state.pendingApprovalId = undefined;
+state.pendingToolCall = undefined;
+state.status = "running";
+
+return state;
+}
+
+
+  /**
+   * Cancel a runtime that has not already finished.
+   */
   cancel(
     state: RuntimeState,
   ): RuntimeState {
@@ -253,8 +328,12 @@ export class AgentRuntime {
     }
 
     state.status = "cancelled";
-    state.pendingApprovalId = undefined;
-    state.pendingToolCall = undefined;
+
+    state.pendingApprovalId =
+      undefined;
+
+    state.pendingToolCall =
+      undefined;
 
     return state;
   }

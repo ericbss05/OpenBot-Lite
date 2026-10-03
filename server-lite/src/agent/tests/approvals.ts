@@ -9,6 +9,7 @@ import { currentTimeTool } from "../tools/internal/current-time";
 import { textAnalyzerTool } from "../tools/internal/text-analyzer";
 import { searchMemoryTool } from "../tools/internal/search-memory";
 import { createSubAgentTool } from "../tools/internal/create-sub-agent";
+import type { RunContext } from "../events/events";
 
 import { createPostgresApprovalStore } from "../approvals/postgres-store";
 
@@ -94,16 +95,22 @@ Utilise les outils disponibles pour accomplir cette mission.
     "Lancement du runtime...\n",
   );
 
-  const state =
-    await runtime.run(
-      AGENT_ID,
-      [
-        {
-          role: "user",
-          content: mission,
-        },
-      ],
-    );
+  const context: RunContext = {
+  runId: crypto.randomUUID(),
+  agentId: AGENT_ID,
+  actorId: "test-user",
+};
+
+const state =
+  await runtime.run(
+    context,
+    [
+      {
+        role: "user",
+        content: mission,
+      },
+    ],
+  );
 
   console.log(
     "\nÉtat après runtime.run() :",
@@ -309,16 +316,22 @@ Utilise les outils disponibles pour accomplir cette mission.
     "Lancement du runtime...\n",
   );
 
-  const state =
-    await runtime.run(
-      AGENT_ID,
-      [
-        {
-          role: "user",
-          content: mission,
-        },
-      ],
-    );
+  const context: RunContext = {
+  runId: crypto.randomUUID(),
+  agentId: AGENT_ID,
+  actorId: "test-user",
+};
+
+const state =
+  await runtime.run(
+    context,
+    [
+      {
+        role: "user",
+        content: mission,
+      },
+    ],
+  );
 
   console.log(
     "\nÉtat après runtime.run() :",

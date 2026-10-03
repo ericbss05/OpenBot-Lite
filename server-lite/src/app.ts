@@ -1,28 +1,34 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { z } from "zod";
 
-import type { LLMMessage } from "./agent/llm/provider";
-import type { AgentStore } from "./agent-profiles/store";
 import { auth } from "./auth/auth";
 import type {
   AppVariables,
   createAuthMiddleware,
 } from "./auth/guards";
 import { requireUser } from "./auth/guards";
-import type { ChannelService } from "./channels/service";
 import type { LiteConfig } from "./config";
+
+import type { ApprovalStore } from "./agent/approvals/approvals";
+import type { AgentStore } from "./agent-profiles/store";
+import type { ChannelService } from "./channels/service";
 import type { AuditStore } from "./gateway/audit";
 import type { Gateway } from "./gateway/store";
-import {
-  callMcpTool,
-  listMcpTools,
-} from "./plugins/mcp";
 import type { PluginStore } from "./plugins/store";
 import type { RoutineStore } from "./routines/store";
 import type { ToolStore } from "./tools/store";
-import { createAgentToolRoutes } from "./tools/agent-tools/routes";
 import type { WorkQueue } from "./work/queue";
+
+import { createAdminRoutes } from "./routes/admin";
+import { createAgentRoutes } from "./routes/agents";
+import { createAgentToolRoutes } from "./routes/agent-tools";
+import { createApprovalRoutes } from "./routes/approvals";
+import { createChannelRoutes } from "./routes/channels";
+import { createGatewayRoutes } from "./routes/gateway";
+import { createPluginRoutes } from "./routes/plugins";
+import { createRoutineRoutes } from "./routes/routines";
+import { createToolRoutes } from "./routes/tools";
+import { eventsRoute } from "./routes/events";
 
 type Auth =
   ReturnType<typeof createAuthMiddleware>;
@@ -30,14 +36,25 @@ type Auth =
 export function createApp(deps: {
   config: LiteConfig;
   auth: Auth;
+
   agents: AgentStore;
   channels: ChannelService;
+
   gateway: Gateway;
   audit: AuditStore;
+
   queue: WorkQueue;
   routines: RoutineStore;
   plugins: PluginStore;
   tools: ToolStore;
+
+  approvals: ApprovalStore;
+
+  resumeApproval: (
+    approvalId: string,
+    decision: "approved" | "rejected",
+  ) => Promise<unknown>;
+
   agentTools: ReturnType<
     typeof createAgentToolRoutes
   >;
@@ -46,15 +63,6 @@ export function createApp(deps: {
     new Hono<{
       Variables: AppVariables;
     }>();
-
-  // ============================================================
-  // Agent tools
-  // ============================================================
-
-  app.route(
-    "/api/agents",
-    deps.agentTools,
-  );
 
   // ============================================================
   // CORS
@@ -72,18 +80,25 @@ export function createApp(deps: {
   // Better Auth
   // ============================================================
 
-  app.all("/api/auth/*", (c) => {
-    return auth.handler(c.req.raw);
-  });
+  app.all(
+    "/api/auth/*",
+    (c) => {
+      return auth.handler(
+        c.req.raw,
+      );
+    },
+  );
 
   // ============================================================
   // Health
   // ============================================================
 
-  app.get("/health", (c) =>
-    c.json({
-      status: "ok",
-    }),
+  app.get(
+    "/health",
+    (c) =>
+      c.json({
+        status: "ok",
+      }),
   );
 
   // ============================================================
@@ -121,981 +136,131 @@ export function createApp(deps: {
   // Me
   // ============================================================
 
-  app.get("/api/me", (c) => {
-    const user = requireUser(c);
+  app.get(
+    "/api/me",
+    (c) => {
+      const user =
+        requireUser(c);
 
-    return c.json(user);
-  });
+      return c.json(user);
+    },
+  );
 
   // ============================================================
   // Agents
   // ============================================================
 
-  app.get(
+  app.route(
     "/api/agents",
-    async (c) => {
-      const user = requireUser(c);
-
-      return c.json(
-        await deps.agents.list(
-          user.id,
-        ),
-      );
-    },
+    createAgentRoutes({
+      agents: deps.agents,
+      audit: deps.audit,
+    }),
   );
 
-  app.post(
+  // ============================================================
+  // Agent Tools
+  // ============================================================
+
+  app.route(
     "/api/agents",
-    async (c) => {
-      const user = requireUser(c);
-
-      const body =
-        await c.req.json();
-
-      try {
-        const agent =
-          await deps.agents.create(
-            body,
-            user.id,
-          );
-
-        await deps.audit.record(
-          "agent.created",
-          user.id,
-          {
-            agentId: agent.id,
-          },
-        );
-
-        return c.json(
-          agent,
-          201,
-        );
-      } catch (error) {
-        return c.json(
-          {
-            error:
-              error instanceof Error
-                ? error.message
-                : "Invalid",
-          },
-          400,
-        );
-      }
-    },
+    deps.agentTools,
   );
 
-  app.get(
-    "/api/agents/:id",
-    async (c) => {
-      const user = requireUser(c);
-      const id =
-        c.req.param("id");
+  // ============================================================
+  // Approvals
+  // ============================================================
 
-      const agent =
-        await deps.agents.get(id);
-
-      if (!agent) {
-        return c.json(
-          {
-            error:
-              "Agent not found",
-          },
-          404,
-        );
-      }
-
-      if (
-        agent.ownerUserId !==
-        user.id
-      ) {
-        return c.json(
-          {
-            error:
-              "Agent not found",
-          },
-          404,
-        );
-      }
-
-      return c.json(agent);
-    },
-  );
-
-  app.patch(
-    "/api/agents/:id",
-    async (c) => {
-      const user = requireUser(c);
-      const id =
-        c.req.param("id");
-
-      const body =
-        await c.req.json();
-
-      try {
-        const agent =
-          await deps.agents.updateOwned(
-            id,
-            user.id,
-            body,
-          );
-
-        if (!agent) {
-          return c.json(
-            {
-              error:
-                "Agent not found",
-            },
-            404,
-          );
-        }
-
-        await deps.audit.record(
-          "agent.updated",
-          user.id,
-          {
-            agentId: agent.id,
-          },
-        );
-
-        return c.json(agent);
-      } catch (error) {
-        return c.json(
-          {
-            error:
-              error instanceof Error
-                ? error.message
-                : "Failed to update agent",
-          },
-          400,
-        );
-      }
-    },
-  );
-
-  app.delete(
-    "/api/agents/:id",
-    async (c) => {
-      const user = requireUser(c);
-      const id =
-        c.req.param("id");
-
-      try {
-        const deleted =
-          await deps.agents.deleteOwned(
-            id,
-            user.id,
-          );
-
-        if (!deleted) {
-          return c.json(
-            {
-              error:
-                "Agent not found",
-            },
-            404,
-          );
-        }
-
-        await deps.audit.record(
-          "agent.deleted",
-          user.id,
-          {
-            agentId: id,
-          },
-        );
-
-        return c.json({
-          success: true,
-        });
-      } catch (error) {
-        return c.json(
-          {
-            error:
-              error instanceof Error
-                ? error.message
-                : "Failed to delete agent",
-          },
-          400,
-        );
-      }
-    },
+  app.route(
+    "/api/approvals",
+    createApprovalRoutes({
+      approvals: deps.approvals,
+      audit: deps.audit,
+      resumeApproval:
+        deps.resumeApproval,
+    }),
   );
 
   // ============================================================
   // Channels
   // ============================================================
 
-  app.get(
+  app.route(
     "/api/channels",
-    async (c) => {
-      const user = requireUser(c);
-
-      return c.json(
-        await deps.channels.list(
-          user.id,
-        ),
-      );
-    },
-  );
-
-  app.post(
-    "/api/channels",
-    async (c) => {
-      const user = requireUser(c);
-
-      const body =
-        z
-          .object({
-            name:
-              z.string().min(1),
-            agents:
-              z
-                .array(
-                  z.object({
-                    agentId:
-                      z.string().min(1),
-                    role:
-                      z.enum([
-                        "primary",
-                        "subagent",
-                      ]),
-                  }),
-                )
-                .min(1),
-          })
-          .parse(
-            await c.req.json(),
-          );
-
-      try {
-        const channel =
-          await deps.channels.create(
-            body,
-            user.id,
-          );
-
-        await deps.audit.record(
-          "channel.created",
-          user.id,
-          {
-            channelId:
-              channel.id,
-          },
-        );
-
-        return c.json(
-          channel,
-          201,
-        );
-      } catch (error) {
-        return c.json(
-          {
-            error:
-              error instanceof Error
-                ? error.message
-                : "Failed to create channel",
-          },
-          400,
-        );
-      }
-    },
-  );
-
-  app.get(
-    "/api/channels/:id",
-    async (c) => {
-      const user = requireUser(c);
-
-      const channelId =
-        c.req.param("id");
-
-      const channel =
-        await deps.channels.get(
-          channelId,
-          user.id,
-        );
-
-      if (!channel) {
-        return c.json(
-          {
-            error:
-              "Channel not found",
-          },
-          404,
-        );
-      }
-
-      return c.json(channel);
-    },
-  );
-
-  app.patch(
-    "/api/channels/:id",
-    async (c) => {
-      const user = requireUser(c);
-
-      const channelId =
-        c.req.param("id");
-
-      const body =
-        z
-          .object({
-            name:
-              z.string().min(1)
-                .optional(),
-
-            active:
-              z.boolean()
-                .optional(),
-
-            agents:
-              z
-                .array(
-                  z.object({
-                    agentId:
-                      z.string().min(1),
-                    role:
-                      z.enum([
-                        "primary",
-                        "subagent",
-                      ]),
-                  }),
-                )
-                .min(1)
-                .optional(),
-          })
-          .parse(
-            await c.req.json(),
-          );
-
-      try {
-        const channel =
-          await deps.channels.update(
-            channelId,
-            user.id,
-            body,
-          );
-
-        if (!channel) {
-          return c.json(
-            {
-              error:
-                "Channel not found",
-            },
-            404,
-          );
-        }
-
-        await deps.audit.record(
-          "channel.updated",
-          user.id,
-          {
-            channelId:
-              channel.id,
-          },
-        );
-
-        return c.json(channel);
-      } catch (error) {
-        return c.json(
-          {
-            error:
-              error instanceof Error
-                ? error.message
-                : "Failed to update channel",
-          },
-          400,
-        );
-      }
-    },
-  );
-
-  app.delete(
-    "/api/channels/:id",
-    async (c) => {
-      const user = requireUser(c);
-
-      const channelId =
-        c.req.param("id");
-
-      try {
-        const deleted =
-          await deps.channels.delete(
-            channelId,
-            user.id,
-          );
-
-        if (!deleted) {
-          return c.json(
-            {
-              error:
-                "Channel not found",
-            },
-            404,
-          );
-        }
-
-        await deps.audit.record(
-          "channel.deleted",
-          user.id,
-          {
-            channelId,
-          },
-        );
-
-        return c.json({
-          success: true,
-        });
-      } catch (error) {
-        return c.json(
-          {
-            error:
-              error instanceof Error
-                ? error.message
-                : "Failed to delete channel",
-          },
-          400,
-        );
-      }
-    },
-  );
-
-  // ============================================================
-  // Channel Messages
-  // ============================================================
-
-  app.get(
-    "/api/channels/:id/messages",
-    async (c) => {
-      const user = requireUser(c);
-
-      const channelId =
-        c.req.param("id");
-
-      const history =
-        await deps.channels.getHistory(
-          channelId,
-          user.id,
-        );
-
-      if (history === null) {
-        return c.json(
-          {
-            error:
-              "Channel not found",
-          },
-          404,
-        );
-      }
-
-      return c.json(history);
-    },
-  );
-
-  app.post(
-    "/api/channels/:id/messages",
-    async (c) => {
-      const user = requireUser(c);
-
-      const channelId =
-        c.req.param("id");
-
-      const body =
-        z
-          .object({
-            content:
-              z.string().min(1),
-            agentId:
-              z.string().optional(),
-          })
-          .parse(
-            await c.req.json(),
-          );
-
-      try {
-        const result =
-          await deps.channels.sendMessage(
-            {
-              channelId,
-              content:
-                body.content,
-            },
-            user.id,
-          );
-
-        if (!result) {
-          return c.json(
-            {
-              error:
-                "Channel not found",
-            },
-            404,
-          );
-        }
-
-        const agentId =
-          body.agentId ??
-          result.channel.agents.find(
-            (agent) =>
-              agent.role ===
-              "primary",
-          )?.agentId;
-
-        if (!agentId) {
-          return c.json(
-            {
-              error:
-                "No primary agent on channel",
-            },
-            400,
-          );
-        }
-
-        const agentExists =
-          result.channel.agents.some(
-            (agent) =>
-              agent.agentId ===
-              agentId,
-          );
-
-        if (!agentExists) {
-          return c.json(
-            {
-              error:
-                "Agent is not attached to this channel",
-            },
-            400,
-          );
-        }
-
-        await deps.queue.offer(
-          "channel.turn",
-          `${channelId}:${Date.now()}`,
-          {
-            channelId,
-            agentId,
-            actorId:
-              user.id,
-          },
-        );
-
-        return c.json(
-          {
-            queued: true,
-            channelId,
-            agentId,
-          },
-          202,
-        );
-      } catch (error) {
-        return c.json(
-          {
-            error:
-              error instanceof Error
-                ? error.message
-                : "Failed to send message",
-          },
-          400,
-        );
-      }
-    },
+    createChannelRoutes({
+      channels: deps.channels,
+      audit: deps.audit,
+      queue: deps.queue,
+    }),
   );
 
   // ============================================================
   // Tools
   // ============================================================
 
-  app.get(
+  app.route(
     "/api/tools",
-    async (c) => {
-      requireUser(c);
-
-      return c.json(
-        await deps.tools.list(),
-      );
-    },
-  );
-
-  app.get(
-    "/api/tools/:id",
-    async (c) => {
-      requireUser(c);
-
-      const tool =
-        await deps.tools.get(
-          c.req.param("id"),
-        );
-
-      if (!tool) {
-        return c.json(
-          {
-            error:
-              "Tool not found",
-          },
-          404,
-        );
-      }
-
-      return c.json(tool);
-    },
-  );
-
-  // ============================================================
-  // Admin
-  // ============================================================
-
-  app.get(
-    "/api/admin/audit-events",
-    async (c) => {
-      return c.json(
-        await deps.audit.list(100),
-      );
-    },
-  );
-
-  app.get(
-    "/api/admin/boundaries",
-    (c) => {
-      return c.json(
-        deps.gateway.getPolicy(),
-      );
-    },
-  );
-
-  app.put(
-    "/api/admin/boundaries",
-    async (c) => {
-      const user =
-        requireUser(c);
-
-      const body =
-        z
-          .object({
-            mode:
-              z.enum([
-                "enforce",
-                "dry-run",
-              ]),
-            deny:
-              z.array(z.string()),
-            allow:
-              z.array(z.string()),
-          })
-          .parse(
-            await c.req.json(),
-          );
-
-      await deps.gateway.setPolicy(
-        body,
-      );
-
-      await deps.audit.record(
-        "configuration.changed",
-        user.id,
-        {
-          area:
-            "boundaries",
-        },
-      );
-
-      return c.json(
-        deps.gateway.getPolicy(),
-      );
-    },
+    createToolRoutes({
+      tools: deps.tools,
+    }),
   );
 
   // ============================================================
   // Gateway
   // ============================================================
 
-  app.post(
-    "/api/gateway/decide",
-    async (c) => {
-      const user =
-        requireUser(c);
-
-      const body =
-        z
-          .object({
-            tool:
-              z.object({
-                name:
-                  z.string(),
-              }),
-            bot:
-              z.object({
-                id:
-                  z.string(),
-              }),
-            page:
-              z
-                .object({
-                  url:
-                    z.string(),
-                  host:
-                    z.string(),
-                })
-                .optional(),
-          })
-          .parse(
-            await c.req.json(),
-          );
-
-      const decision =
-        deps.gateway.evaluate({
-          ...body,
-          actor: {
-            id: user.id,
-          },
-        });
-
-      await deps.audit.record(
-        "gateway.decided",
-        user.id,
-        {
-          tool:
-            body.tool.name,
-          allowed:
-            decision.allowed,
-          dryRun:
-            decision.dryRun,
-        },
-      );
-
-      if (
-        !decision.allowed &&
-        !decision.dryRun
-      ) {
-        return c.json(
-          decision,
-          403,
-        );
-      }
-
-      return c.json(decision);
-    },
+  app.route(
+    "/api/gateway",
+    createGatewayRoutes({
+      gateway: deps.gateway,
+      audit: deps.audit,
+    }),
   );
 
   // ============================================================
   // Routines
   // ============================================================
 
-  app.get(
+  app.route(
     "/api/routines",
-    async (c) => {
-      return c.json(
-        await deps.routines.list(),
-      );
-    },
-  );
-
-  app.post(
-    "/api/routines",
-    async (c) => {
-      const user =
-        requireUser(c);
-
-      const id =
-        await deps.routines.create(
-          await c.req.json(),
-        );
-
-      await deps.audit.record(
-        "routine.created",
-        user.id,
-        {
-          routineId: id,
-        },
-      );
-
-      return c.json(
-        { id },
-        201,
-      );
-    },
+    createRoutineRoutes({
+      routines: deps.routines,
+      audit: deps.audit,
+    }),
   );
 
   // ============================================================
   // Plugins
   // ============================================================
 
-  app.get(
+  app.route(
     "/api/plugins",
-    async (c) => {
-      return c.json(
-        await deps.plugins.list(),
-      );
-    },
+    createPluginRoutes({
+      plugins: deps.plugins,
+      gateway: deps.gateway,
+      audit: deps.audit,
+    }),
   );
 
-  app.post(
-    "/api/plugins",
-    async (c) => {
-      const user =
-        requireUser(c);
+  // ============================================================
+  // Admin
+  // ============================================================
 
-      const id =
-        await deps.plugins.create(
-          await c.req.json(),
-        );
-
-      await deps.audit.record(
-        "plugin.registered",
-        user.id,
-        {
-          pluginId: id,
-        },
-      );
-
-      return c.json(
-        { id },
-        201,
-      );
-    },
+  app.route(
+    "/api/admin",
+    createAdminRoutes({
+      audit: deps.audit,
+      gateway: deps.gateway,
+    }),
   );
+
+  // ============================================================
+  // Events
+  // ============================================================
 
   app.get(
-    "/api/plugins/:id/tools",
-    async (c) => {
-      const row =
-        await deps.plugins.get(
-          c.req.param("id"),
-        );
-
-      if (
-        !row ||
-        !row.enabled
-      ) {
-        return c.json(
-          {
-            error:
-              "Not found",
-          },
-          404,
-        );
-      }
-
-      const args =
-        JSON.parse(
-          row.args,
-        ) as string[];
-
-      const tools =
-        await listMcpTools(
-          row.command,
-          args,
-        );
-
-      return c.json({
-        tools,
-      });
-    },
-  );
-
-  app.post(
-    "/api/plugins/:id/call",
-    async (c) => {
-      const user =
-        requireUser(c);
-
-      const row =
-        await deps.plugins.get(
-          c.req.param("id"),
-        );
-
-      if (
-        !row ||
-        !row.enabled
-      ) {
-        return c.json(
-          {
-            error:
-              "Not found",
-          },
-          404,
-        );
-      }
-
-      const body =
-        z
-          .object({
-            tool:
-              z.string(),
-            arguments:
-              z
-                .record(
-                  z.string(),
-                  z.unknown(),
-                )
-                .default({}),
-            botId:
-              z
-                .string()
-                .default(
-                  "unknown",
-                ),
-          })
-          .parse(
-            await c.req.json(),
-          );
-
-      const decision =
-        deps.gateway.evaluate({
-          tool: {
-            name: body.tool,
-          },
-          bot: {
-            id: body.botId,
-          },
-          actor: {
-            id: user.id,
-          },
-        });
-
-      await deps.audit.record(
-        "plugin.tool_called",
-        user.id,
-        {
-          pluginId: row.id,
-          tool: body.tool,
-          allowed:
-            decision.allowed,
-        },
-      );
-
-      if (
-        !decision.allowed &&
-        !decision.dryRun
-      ) {
-        return c.json(
-          {
-            error:
-              "Refused by policy",
-            decision,
-          },
-          403,
-        );
-      }
-
-      const args =
-        JSON.parse(
-          row.args,
-        ) as string[];
-
-      const result =
-        await callMcpTool(
-          row.command,
-          args,
-          body.tool,
-          body.arguments,
-        );
-
-      return c.json({
-        result,
-        decision,
-      });
-    },
+    "/api/channels/:channelId/events",
+    eventsRoute,
   );
 
   return app;

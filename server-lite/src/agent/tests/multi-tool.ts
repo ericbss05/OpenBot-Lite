@@ -14,6 +14,7 @@ import { textAnalyzerTool } from "../tools/internal/text-analyzer";
 import { createAgentStore } from "../store";
 
 import { createTestGateway } from "./helpers/test-gateway";
+import type { RunContext } from "../events/events";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -107,16 +108,22 @@ interface RunOutcome {
 async function runOnce(
   runtime: AgentRuntime,
 ): Promise<RunOutcome> {
+  const context: RunContext = {
+    runId: crypto.randomUUID(),
+    agentId: "test-agent",
+    actorId: "test-user",
+  };
+
   const state =
     await runtime.run(
-  "test-agent",
-  [
-    {
-      role: "user",
-      content: MISSION,
-    },
-  ],
-);
+      context,
+      [
+        {
+          role: "user",
+          content: MISSION,
+        },
+      ],
+    );
 
   const called =
     state.toolResults.map(

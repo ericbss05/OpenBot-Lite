@@ -1,296 +1,444 @@
 "use client";
 
+import {
+  type FormEvent,
+  useCallback,
+  useState,
+} from "react";
+
 import { useParams } from "next/navigation";
-import { useState } from "react";
 
-import { useChannels } from "@/hooks/useChannels";
+import { useChannelDetail } from "@/hooks/useChannelDetail";
 import { useChannelMessages } from "@/hooks/useChannelMessages";
+import { useChannelEvents } from "@/hooks/useChannelEvents";
+import { useChannelApprovals } from "@/hooks/useChannelApprovals";
 
-type ApprovalRequest = {
-  id: string;
-  action: string;
-  description: string;
-  details: {
-    name: string;
-    role: string;
-    tools: string[];
-  };
-};
+import type { ChannelMessage } from "@/lib/api/channels";
 
 export default function ChannelPage() {
-  const params = useParams();
-  const channelId = params.id as string;
+  const params = useParams<{
+    id: string;
+  }>();
 
-  const { channels } = useChannels();
+  const channelId = params.id;
+
+  const {
+    channel,
+    loading: channelLoading,
+    error: channelError,
+  } = useChannelDetail(channelId);
 
   const {
     messages,
     loading: messagesLoading,
-    sending,
+    error: messagesError,
     send,
+    appendMessage,
   } = useChannelMessages(channelId);
 
-  const [content, setContent] = useState("");
+  const {
+    approvals,
+    addApproval,
+    removeApproval,
+    approve,
+    reject,
+  } = useChannelApprovals();
 
-  const [approval, setApproval] =
-    useState<ApprovalRequest | null>(null);
+  const handleMessageCreated =
+    useCallback(
+      (message: ChannelMessage) => {
+        appendMessage(message);
+      },
+      [appendMessage],
+    );
 
-  const channel = channels.find(
-    (item) => item.id === channelId,
+  const {
+    connected,
+    runtimeStatus,
+  } = useChannelEvents(
+    channelId,
+    {
+      onMessageCreated:
+        handleMessageCreated,
+
+      onApprovalRequired:
+        addApproval,
+
+      onApprovalResolved:
+        removeApproval,
+    },
   );
 
-  async function handleSubmit(
-    event: React.FormEvent<HTMLFormElement>,
-  ) {
+  const [content, setContent] =
+    useState("");
+
+  const [sending, setSending] =
+    useState(false);
+
+  const [processingApprovalId, setProcessingApprovalId] =
+    useState<string | null>(null);
+
+  const handleSubmit = async (
+    event: FormEvent<HTMLFormElement>,
+  ) => {
     event.preventDefault();
 
     const value = content.trim();
 
-    if (!value || sending) return;
-
-    await send(value);
-
-    setContent("");
-
-    /*
-     * TEMPORAIRE :
-     * On simule ici une demande d'autorisation
-     * pour tester l'UI.
-     *
-     * Plus tard cette donnée viendra directement
-     * du workflow backend lorsque le Gateway
-     * retournera "approval_required".
-     */
-    if (
-      value.toLowerCase().includes("crée") ||
-      value.toLowerCase().includes("cree") ||
-      value.toLowerCase().includes("créer") ||
-      value.toLowerCase().includes("creer")
-    ) {
-      setApproval({
-        id: crypto.randomUUID(),
-        action: "create_sub_agent",
-        description:
-          "L'agent souhaite créer un nouvel agent spécialisé.",
-        details: {
-          name: "Prospecteur",
-          role: "Spécialiste de la prospection commerciale",
-          tools: [
-            "calculator",
-            "search_memory",
-          ],
-        },
-      });
+    if (!value || sending) {
+      return;
     }
+
+    setSending(true);
+
+    try {
+      await send(value);
+      setContent("");
+    } catch {
+      // L'erreur est déjà gérée
+      // dans useChannelMessages.
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleApprove = async (
+    approvalId: string,
+  ) => {
+    if (processingApprovalId) {
+      return;
+    }
+
+    setProcessingApprovalId(
+      approvalId,
+    );
+
+    try {
+      await approve(approvalId);
+    } catch (error) {
+      console.error(
+        "[APPROVAL] Failed to approve:",
+        error,
+      );
+    } finally {
+      setProcessingApprovalId(null);
+    }
+  };
+
+  const handleReject = async (
+    approvalId: string,
+  ) => {
+    if (processingApprovalId) {
+      return;
+    }
+
+    setProcessingApprovalId(
+      approvalId,
+    );
+
+    try {
+      await reject(approvalId);
+    } catch (error) {
+      console.error(
+        "[APPROVAL] Failed to reject:",
+        error,
+      );
+    } finally {
+      setProcessingApprovalId(null);
+    }
+  };
+
+  if (channelLoading) {
+    return (
+      <main className="p-6">
+        <p>Chargement...</p>
+      </main>
+    );
   }
 
-  function handleApprove() {
-    /*
-     * TEMPORAIRE :
-     * Plus tard :
-     * → appel API d'approbation
-     * → reprise du workflow
-     */
-    setApproval(null);
+  if (channelError) {
+    return (
+      <main className="p-6">
+        <h1 className="text-lg font-semibold">
+          Erreur
+        </h1>
+
+        <p className="mt-2 text-sm text-muted-foreground">
+          {channelError}
+        </p>
+      </main>
+    );
   }
 
-  function handleReject() {
-    /*
-     * TEMPORAIRE :
-     * Plus tard :
-     * → appel API de rejet
-     * → reprise/fin du workflow
-     */
-    setApproval(null);
+  if (!channel) {
+    return (
+      <main className="p-6">
+        <p>Channel introuvable.</p>
+      </main>
+    );
   }
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] min-h-0 min-w-0 flex-col">
-      <header className="border-b px-6 py-4">
-        <h1 className="font-semibold">
-          {channel?.name ?? "Channel"}
-        </h1>
-      </header>
+    <main className="flex min-h-full flex-col">
+      {/* Header */}
+      <header className="border-b border-white/10 px-6 py-4">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-lg font-semibold">
+              {channel.name}
+            </h1>
 
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex-1 overflow-y-auto px-6 py-6">
-          {messagesLoading ? (
-            <div className="text-sm text-muted-foreground">
-              Loading messages...
-            </div>
-          ) : (
-            <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
-              {messages.length === 0 && !approval ? (
-                <div className="flex h-full min-h-64 items-center justify-center">
-                  <p className="text-sm text-muted-foreground">
-                    Start a conversation.
-                  </p>
-                </div>
-              ) : (
-                <>
-                  {messages.map((message) => (
-                    <div
-                      key={message.id}
-                      className={`flex ${
-                        message.role === "user"
-                          ? "justify-end"
-                          : "justify-start"
-                      }`}
-                    >
-                      <div
-                        className={`max-w-[80%] rounded-lg px-4 py-3 text-sm ${
-                          message.role === "user"
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-muted"
-                        }`}
-                      >
-                        {message.content}
-                      </div>
-                    </div>
-                  ))}
+            <p className="mt-1 text-xs text-white/30">
+              {channel.id}
+            </p>
+          </div>
 
-                  {approval && (
-                    <div className="flex justify-start">
-                      <div className="w-full max-w-xl overflow-hidden rounded-xl border bg-background">
-                        <div className="border-b px-5 py-4">
-                          <div className="flex items-start gap-3">
-                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-yellow-500/10 text-yellow-600">
-                              ⚠
-                            </div>
-
-                            <div>
-                              <h2 className="font-semibold">
-                                Authorization required
-                              </h2>
-
-                              <p className="mt-1 text-sm text-muted-foreground">
-                                The agent wants to perform
-                                an action that requires your
-                                approval.
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="space-y-4 px-5 py-5">
-                          <div>
-                            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                              Action
-                            </p>
-
-                            <p className="mt-1 font-medium">
-                              {approval.action}
-                            </p>
-                          </div>
-
-                          <div>
-                            <p className="text-sm text-muted-foreground">
-                              {approval.description}
-                            </p>
-                          </div>
-
-                          <div className="rounded-lg border bg-muted/30 p-4">
-                            <div className="space-y-4">
-                              <div>
-                                <p className="text-xs font-medium text-muted-foreground">
-                                  Agent name
-                                </p>
-
-                                <p className="mt-1 text-sm font-medium">
-                                  {approval.details.name}
-                                </p>
-                              </div>
-
-                              <div>
-                                <p className="text-xs font-medium text-muted-foreground">
-                                  Role
-                                </p>
-
-                                <p className="mt-1 text-sm">
-                                  {approval.details.role}
-                                </p>
-                              </div>
-
-                              <div>
-                                <p className="text-xs font-medium text-muted-foreground">
-                                  Tools
-                                </p>
-
-                                <div className="mt-2 flex flex-wrap gap-2">
-                                  {approval.details.tools.map(
-                                    (tool) => (
-                                      <span
-                                        key={tool}
-                                        className="rounded-md border bg-background px-2 py-1 font-mono text-xs"
-                                      >
-                                        {tool}
-                                      </span>
-                                    ),
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                            <button
-                              type="button"
-                              onClick={handleReject}
-                              className="rounded-md border px-4 py-2 text-sm font-medium transition hover:bg-muted"
-                            >
-                              Reject
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={handleApprove}
-                              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-                            >
-                              Approve
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="border-t px-6 py-4">
-          <form
-            onSubmit={handleSubmit}
-            className="mx-auto w-full max-w-3xl"
-          >
-            <textarea
-              value={content}
-              onChange={(event) =>
-                setContent(event.target.value)
+          <div className="flex items-center gap-2 text-xs">
+            <span
+              className={
+                connected
+                  ? "h-2 w-2 rounded-full bg-green-400"
+                  : "h-2 w-2 rounded-full bg-white/20"
               }
-              placeholder="Ask your agent to do something..."
-              disabled={sending}
-              rows={3}
-              className="w-full resize-none rounded-lg border bg-background px-4 py-3 text-sm outline-none transition focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
             />
 
-            <div className="mt-2 flex justify-end">
-              <button
-                type="submit"
-                disabled={
-                  !content.trim() || sending
-                }
-                className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {sending
-                  ? "Sending..."
-                  : "Send"}
-              </button>
-            </div>
-          </form>
+            <span className="text-white/40">
+              {connected
+                ? "Connecté"
+                : "Déconnecté"}
+            </span>
+          </div>
         </div>
-      </div>
-    </div>
+      </header>
+
+      {/* Messages */}
+      <section className="flex-1 overflow-y-auto px-6 py-6">
+        <div className="mx-auto max-w-3xl">
+          {messagesLoading && (
+            <div className="text-sm text-white/40">
+              Chargement des messages...
+            </div>
+          )}
+
+          {messagesError && (
+            <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-sm text-red-400">
+              {messagesError}
+            </div>
+          )}
+
+          {!messagesLoading &&
+            messages.length === 0 &&
+            approvals.length === 0 && (
+              <div className="py-16 text-center">
+                <p className="text-sm text-white/40">
+                  Aucun message.
+                </p>
+
+                <p className="mt-1 text-xs text-white/20">
+                  Envoyez un message pour commencer.
+                </p>
+              </div>
+            )}
+
+          <div className="space-y-6">
+            {/* Conversation */}
+            {messages.map((message) => {
+              const isUser =
+                message.role === "user";
+
+              return (
+                <article
+                  key={message.id}
+                  className={
+                    isUser
+                      ? "flex justify-end"
+                      : "flex justify-start"
+                  }
+                >
+                  <div
+                    className={
+                      isUser
+                        ? "max-w-[80%] rounded-2xl rounded-br-md bg-white px-4 py-3 text-black"
+                        : "max-w-[80%] rounded-2xl rounded-bl-md border border-white/10 bg-white/[0.03] px-4 py-3"
+                    }
+                  >
+                    <div
+                      className={
+                        isUser
+                          ? "mb-1 text-[11px] font-medium text-black/50"
+                          : "mb-1 text-[11px] font-medium text-white/30"
+                      }
+                    >
+                      {isUser
+                        ? "Vous"
+                        : "Agent"}
+                    </div>
+
+                    <p className="whitespace-pre-wrap text-sm leading-6">
+                      {message.content}
+                    </p>
+                  </div>
+                </article>
+              );
+            })}
+
+            {/* Approvals */}
+            {approvals.map((approval) => {
+              const processing =
+                processingApprovalId ===
+                approval.id;
+
+              return (
+                <article
+                  key={approval.id}
+                  className="flex justify-start"
+                >
+                  <div className="w-full max-w-[80%] rounded-2xl rounded-bl-md border border-yellow-500/20 bg-yellow-500/5 p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-yellow-500/10 text-sm">
+                        ⚠️
+                      </div>
+
+                      <div className="min-w-0">
+                        <h2 className="text-sm font-medium">
+                          Approbation requise
+                        </h2>
+
+                        <p className="mt-1 text-xs text-white/40">
+                          L&apos;agent souhaite exécuter
+                          une action nécessitant votre
+                          autorisation.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 rounded-lg border border-white/10 bg-black/20 p-3">
+                      <div className="text-xs font-medium text-white/60">
+                        {approval.toolId}
+                      </div>
+
+                      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-white/40">
+                        {JSON.stringify(
+                          approval.arguments,
+                          null,
+                          2,
+                        )}
+                      </pre>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={
+                          processing ||
+                          processingApprovalId !==
+                            null
+                        }
+                        onClick={() =>
+                          handleReject(
+                            approval.id,
+                          )
+                        }
+                        className="rounded-lg border border-white/10 px-4 py-2 text-sm text-white/70 transition-colors hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {processing
+                          ? "Traitement..."
+                          : "Refuser"}
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={
+                          processing ||
+                          processingApprovalId !==
+                            null
+                        }
+                        onClick={() =>
+                          handleApprove(
+                            approval.id,
+                          )
+                        }
+                        className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-black transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {processing
+                          ? "Traitement..."
+                          : "Autoriser"}
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+
+            {/* Runtime status */}
+            {runtimeStatus &&
+              approvals.length === 0 && (
+                <div className="flex justify-start">
+                  <div className="flex items-center gap-3 rounded-2xl rounded-bl-md border border-white/10 bg-white/[0.03] px-4 py-3">
+                    <div className="flex gap-1">
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/50" />
+
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/50 [animation-delay:150ms]" />
+
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/50 [animation-delay:300ms]" />
+                    </div>
+
+                    <span className="text-sm text-white/40">
+                      {runtimeStatus}
+                    </span>
+                  </div>
+                </div>
+              )}
+          </div>
+        </div>
+      </section>
+
+      {/* Composer */}
+      <section className="border-t border-white/10 px-6 py-4">
+        <form
+          onSubmit={handleSubmit}
+          className="mx-auto flex max-w-3xl items-end gap-3"
+        >
+          <textarea
+            value={content}
+            onChange={(event) =>
+              setContent(event.target.value)
+            }
+            placeholder="Écrire un message..."
+            disabled={sending}
+            rows={1}
+            onKeyDown={(event) => {
+              if (
+                event.key === "Enter" &&
+                !event.shiftKey
+              ) {
+                event.preventDefault();
+
+                if (
+                  content.trim() &&
+                  !sending
+                ) {
+                  event.currentTarget.form?.requestSubmit();
+                }
+              }
+            }}
+            className="min-h-12 flex-1 resize-none rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm outline-none placeholder:text-white/30 focus:border-white/20"
+          />
+
+          <button
+            type="submit"
+            disabled={
+              sending ||
+              !content.trim()
+            }
+            className="min-h-12 rounded-xl bg-white px-5 text-sm font-medium text-black transition-opacity disabled:cursor-not-allowed disabled:opacity-30"
+          >
+            {sending
+              ? "..."
+              : "Envoyer"}
+          </button>
+        </form>
+      </section>
+    </main>
   );
 }

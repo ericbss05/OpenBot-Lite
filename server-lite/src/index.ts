@@ -37,11 +37,18 @@ import { createWorkQueue } from "./work/queue";
 import { ToolAuthorizationService } from "./agent/authorization";
 
 import { createToolStore } from "./tools/store";
-import { createAgentToolRoutes } from "./tools/agent-tools/routes";
+import { createAgentToolRoutes } from "./routes/agent-tools";
 
 import {
   createPostgresApprovalStore,
 } from "./agent/approvals/postgres-store";
+import {
+  eventHub,
+} from "./agent/events/hub";
+import { createConversationStore } from "./agent/conversation-store";
+
+const conversationStore =
+  createConversationStore();
 
 const config = loadConfig();
 
@@ -155,6 +162,7 @@ function createRuntime(actorId: string) {
     agents: runtimeAgents,
     approvals,
     actorId,
+    events: eventHub,
   });
 }
 
@@ -175,23 +183,20 @@ const plugins =
 const turnRunner =
   createTurnRunner({
     queue,
-
-    // Le TurnRunner a besoin du store directement
-    // car il utilise getOwned(), history() et
-    // appendMessage().
     channels: channelStore,
-
     audit,
-
+    approvals,
     llm,
-
     tools,
+    conversationStore,
+    events: eventHub,
 
     getAgent: (agentId) =>
       runtimeAgents.get(agentId),
 
     createRuntime,
   });
+
 
 turnRunner.start();
 
@@ -232,8 +237,10 @@ const app =
     queue,
     routines,
     plugins,
+    approvals,
     tools: toolStore,
     agentTools: agentToolRoutes,
+    resumeApproval: turnRunner.resumeApproval,
   });
 
 // --------------------------------------------------
@@ -249,4 +256,5 @@ console.log(
 serve({
   fetch: app.fetch,
   port,
+  idleTimeout: 0,
 });
