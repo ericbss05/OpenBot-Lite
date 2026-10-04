@@ -1,7 +1,7 @@
 import { serve } from "bun";
 
 import { AgentRuntime } from "./agent/runtime/runtime";
-import { OpenAIProvider } from "./agent/llm/openai";
+import { OpenAIProvider } from "./agent/llm/providers/openai";
 import { createAgentStore as createRuntimeAgentStore } from "./agent/store";
 import {
   ToolExecutor,

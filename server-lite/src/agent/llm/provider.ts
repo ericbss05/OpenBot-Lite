@@ -4,20 +4,8 @@ import type { ToolDefinition } from "../tools/tools";
 export interface LLMMessage {
   role: "user" | "assistant" | "tool";
   content: string;
-
-  /**
-   * Identifie le tool call auquel ce résultat correspond.
-   *
-   * Utilisé uniquement pour les messages role="tool".
-   */
+  toolName?: string;
   toolCallId?: string;
-
-  /**
-   * Tools demandés par l'assistant lors de ce message.
-   *
-   * Présent lorsqu'un message assistant déclenche
-   * une ou plusieurs actions.
-   */
   toolCalls?: LLMToolCall[];
 }
 

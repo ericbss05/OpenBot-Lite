@@ -1,6 +1,6 @@
 import { db } from "../../db";
 
-import { OpenAIProvider } from "../llm/openai";
+import { OpenAIProvider } from "../llm/providers/openai";
 
 import { AgentRuntime } from "../runtime/runtime";
 

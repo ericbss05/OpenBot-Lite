@@ -14,108 +14,150 @@ import { RuntimeHistory } from "./runtime/history";
 import type { RuntimeState } from "./runtime/state";
 
 export type ConversationStatus =
-| "completed"
-| "waiting"
-| "failed";
+  | "completed"
+  | "waiting"
+  | "failed";
 
 export interface ConversationState {
-agent: Agent;
-context: RunContext;
-history: LLMMessage[];
-runtimeState: RuntimeState;
+  agent: Agent;
+  context: RunContext;
+  history: LLMMessage[];
+  runtimeState: RuntimeState;
 }
 
 export interface ConversationResult {
-status: ConversationStatus;
-runId: string;
-content?: string;
-error?: string;
-pendingApprovalId?: string;
-pendingToolCall?: LLMToolCall;
-state: ConversationState;
+  status: ConversationStatus;
+  runId: string;
+  content?: string;
+  error?: string;
+  pendingApprovalId?: string;
+  pendingToolCall?: LLMToolCall;
+  state: ConversationState;
 }
 
 export class AgentConversation {
-constructor(
-private readonly llm: LLMProvider,
-private readonly tools: ToolRegistry,
-private readonly runtime: AgentRuntime,
-private readonly events?: AgentEventSink,
-private readonly maxTurns = 10,
-) {}
+  constructor(
+    private readonly llm: LLMProvider,
+    private readonly tools: ToolRegistry,
+    private readonly runtime: AgentRuntime,
+    private readonly events?: AgentEventSink,
+    private readonly maxTurns = 10,
+  ) {}
 
-async run(
-agent: Agent,
-messages: LLMMessage[],
-context: RunContext,
-): Promise<ConversationResult> {
-if (messages.length === 0) {
-throw new Error(
-"Cannot run conversation without messages.",
-);
-}
-if (context.agentId !== agent.id) {
-  throw new Error(
-    "RunContext agentId does not match the conversation agent.",
-  );
-}
+  async run(
+    agent: Agent,
+    messages: LLMMessage[],
+    context: RunContext,
+  ): Promise<ConversationResult> {
+    if (messages.length === 0) {
+      throw new Error(
+        "Cannot run conversation without messages.",
+      );
+    }
 
-const history = new RuntimeHistory([
-  ...messages,
-]);
+    if (context.agentId !== agent.id) {
+      throw new Error(
+        "RunContext agentId does not match the conversation agent.",
+      );
+    }
 
-const runtimeState: RuntimeState = {
-  runId: context.runId,
-  context,
-  agent,
-  status: "pending",
-  messages: [...messages],
-  turn: 0,
-  maxTurns: 1,
-  toolResults: [],
-};
+    const history = new RuntimeHistory([
+      ...messages,
+    ]);
 
-return this.continueConversation(
-  agent,
-  context,
-  history,
-  runtimeState,
-);
+    const runtimeState: RuntimeState = {
+      runId: context.runId,
+      context,
+      agent,
+      status: "pending",
+      messages: [...messages],
+      turn: 0,
+      maxTurns: 1,
+      toolResults: [],
+    };
 
-}
-
-
-async resume(
-  state: ConversationState,
-  decision: "approved" | "rejected",
-): Promise<ConversationResult> {
-  const pendingToolCall =
-    state.runtimeState.pendingToolCall;
-
-  if (!pendingToolCall) {
-    throw new Error(
-      "No pending tool call in conversation state.",
+    return this.continueConversation(
+      agent,
+      context,
+      history,
+      runtimeState,
     );
   }
 
-  const runtimeState =
-    await this.runtime.resume(
-      state.runtimeState,
-      decision,
-    );
+  async resume(
+    state: ConversationState,
+    decision: "approved" | "rejected",
+  ): Promise<ConversationResult> {
+    const pendingToolCall =
+      state.runtimeState.pendingToolCall;
 
-  const history =
-    new RuntimeHistory(
-      state.history,
-    );
+    if (!pendingToolCall) {
+      throw new Error(
+        "No pending tool call in conversation state.",
+      );
+    }
 
-  if (decision === "rejected") {
+    const runtimeState =
+      await this.runtime.resume(
+        state.runtimeState,
+        decision,
+      );
+
+    const history =
+      new RuntimeHistory(
+        state.history,
+      );
+
+    if (decision === "rejected") {
+      history.addToolResult(
+        pendingToolCall.id,
+        pendingToolCall.toolId,
+        {
+          error:
+            "Tool execution rejected by the user.",
+        },
+      );
+
+      runtimeState.pendingApprovalId =
+        undefined;
+
+      runtimeState.pendingToolCall =
+        undefined;
+
+      runtimeState.messages =
+        history.getMessages();
+
+      return this.continueConversation(
+        state.agent,
+        state.context,
+        history,
+        runtimeState,
+      );
+    }
+
+    const lastToolResult =
+      runtimeState.toolResults[
+        runtimeState.toolResults.length - 1
+      ];
+
+    if (!lastToolResult) {
+      throw new Error(
+        "Approved tool produced no result.",
+      );
+    }
+
+    const content =
+      lastToolResult.status === "success"
+        ? lastToolResult.output
+        : {
+            error:
+              lastToolResult.error,
+          };
+
     history.addToolResult(
       pendingToolCall.id,
-      {
-        error:
-          "Tool execution rejected by the user.",
-      },
+      pendingToolCall.toolId,
+      content,
     );
 
     runtimeState.pendingApprovalId =
@@ -135,113 +177,201 @@ async resume(
     );
   }
 
-  const lastToolResult =
-    runtimeState.toolResults[
-      runtimeState.toolResults.length - 1
-    ];
+  private async continueConversation(
+    agent: Agent,
+    context: RunContext,
+    history: RuntimeHistory,
+    runtimeState: RuntimeState,
+  ): Promise<ConversationResult> {
+    for (
+      let turn = 0;
+      turn < this.maxTurns;
+      turn += 1
+    ) {
+      console.log(
+        "[AGENT] generating response...",
+      );
 
-  if (!lastToolResult) {
-    throw new Error(
-      "Approved tool produced no result.",
-    );
-  }
+      await this.events?.emit({
+        type: "llm.started",
+        context,
+      });
 
-  const content =
-    lastToolResult.status === "success"
-      ? lastToolResult.output
-      : {
-          error:
-            lastToolResult.error,
+      const response =
+        await this.llm.generate({
+          agent,
+          messages:
+            history.getMessages(),
+          tools: this.tools.list(
+            agent.tools,
+          ),
+        });
+
+      await this.events?.emit({
+        type: "llm.completed",
+        context,
+      });
+
+      console.log(
+        "[AGENT] LLM response:",
+        response,
+      );
+
+      if (response.type === "text") {
+        history.addAssistantMessage(
+          response.content,
+        );
+
+        runtimeState.status =
+          "completed";
+
+        runtimeState.result =
+          response.content;
+
+        runtimeState.messages =
+          history.getMessages();
+
+        await this.events?.emit({
+          type: "agent.completed",
+          context,
+          output:
+            response.content,
+        });
+
+        return {
+          status: "completed",
+          runId: context.runId,
+          content:
+            response.content,
+          state: {
+            agent,
+            context,
+            history:
+              history.getMessages(),
+            runtimeState,
+          },
         };
+      }
 
-  history.addToolResult(
-    pendingToolCall.id,
-    content,
-  );
+      history.addAssistantToolCalls(
+        response.calls,
+      );
 
-  runtimeState.pendingApprovalId =
-    undefined;
+      for (const call of response.calls) {
+        console.log(
+          "[AGENT] tool requested:",
+          {
+            toolId: call.toolId,
+            arguments: call.arguments,
+          },
+        );
 
-  runtimeState.pendingToolCall =
-    undefined;
+        const execution =
+          await this.runtime.executeTool(
+            context,
+            call,
+          );
 
-  runtimeState.messages =
-    history.getMessages();
+        if (
+          execution.status ===
+          "approval_required"
+        ) {
+          runtimeState.status =
+            "waiting";
 
-  return this.continueConversation(
-    state.agent,
-    state.context,
-    history,
-    runtimeState,
-  );
-}
+          runtimeState.pendingApprovalId =
+            execution.approvalId;
 
-private async continueConversation(
-agent: Agent,
-context: RunContext,
-history: RuntimeHistory,
-runtimeState: RuntimeState,
-): Promise<ConversationResult> {
-for (
-let turn = 0;
-turn < this.maxTurns;
-turn += 1
-) {
-console.log(
-"[AGENT] generating response...",
-);
+          runtimeState.pendingToolCall =
+            call;
 
-  await this.events?.emit({
-    type: "llm.started",
-    context,
-  });
+          runtimeState.messages =
+            history.getMessages();
 
-  const response =
-    await this.llm.generate({
-      agent,
-      messages:
-        history.getMessages(),
-      tools: this.tools.list(
-        agent.tools,
-      ),
-    });
+          return {
+            status: "waiting",
+            runId: context.runId,
+            pendingApprovalId:
+              execution.approvalId,
+            pendingToolCall: call,
+            state: {
+              agent,
+              context,
+              history:
+                history.getMessages(),
+              runtimeState,
+            },
+          };
+        }
 
-  await this.events?.emit({
-    type: "llm.completed",
-    context,
-  });
+        if (
+          execution.status ===
+          "denied"
+        ) {
+          history.addToolResult(
+            call.id,
+            call.toolId,
+            {
+              error:
+                execution.reason ??
+                "Tool execution denied by Gateway.",
+            },
+          );
 
-  console.log(
-    "[AGENT] LLM response:",
-    response,
-  );
+          continue;
+        }
 
-  if (response.type === "text") {
-    history.addAssistantMessage(
-      response.content,
-    );
+        if (!execution.result) {
+          history.addToolResult(
+            call.id,
+            call.toolId,
+            {
+              error:
+                "Tool execution returned no result.",
+            },
+          );
 
-    runtimeState.status =
-      "completed";
+          continue;
+        }
 
-    runtimeState.result =
-      response.content;
+        const toolResult =
+          execution.result;
 
+        const content =
+          toolResult.status ===
+          "success"
+            ? toolResult.output
+            : {
+                error:
+                  toolResult.error,
+              };
+
+        history.addToolResult(
+          call.id,
+          call.toolId,
+          content,
+        );
+      }
+    }
+
+    const error =
+      `Maximum conversation turns exceeded: ${this.maxTurns}`;
+
+    runtimeState.status = "failed";
+    runtimeState.error = error;
     runtimeState.messages =
       history.getMessages();
 
     await this.events?.emit({
-      type: "agent.completed",
+      type: "agent.failed",
       context,
-      output:
-        response.content,
+      error,
     });
 
     return {
-      status: "completed",
+      status: "failed",
       runId: context.runId,
-      content:
-        response.content,
+      error,
       state: {
         agent,
         context,
@@ -251,131 +381,4 @@ console.log(
       },
     };
   }
-
-  history.addAssistantToolCalls(
-    response.calls,
-  );
-
-  for (const call of response.calls) {
-    console.log(
-      "[AGENT] tool requested:",
-      {
-        toolId: call.toolId,
-        arguments: call.arguments,
-      },
-    );
-
-    const execution =
-      await this.runtime.executeTool(
-        context,
-        call,
-      );
-
-    if (
-      execution.status ===
-      "approval_required"
-    ) {
-      runtimeState.status =
-        "waiting";
-
-      runtimeState.pendingApprovalId =
-        execution.approvalId;
-
-      runtimeState.pendingToolCall =
-        call;
-
-      runtimeState.messages =
-        history.getMessages();
-
-      return {
-        status: "waiting",
-        runId: context.runId,
-        pendingApprovalId:
-          execution.approvalId,
-        pendingToolCall: call,
-        state: {
-          agent,
-          context,
-          history:
-            history.getMessages(),
-          runtimeState,
-        },
-      };
-    }
-
-    if (
-      execution.status ===
-      "denied"
-    ) {
-      history.addToolResult(
-        call.id,
-        {
-          error:
-            execution.reason ??
-            "Tool execution denied by Gateway.",
-        },
-      );
-
-      continue;
-    }
-
-    if (!execution.result) {
-      history.addToolResult(
-        call.id,
-        {
-          error:
-            "Tool execution returned no result.",
-        },
-      );
-
-      continue;
-    }
-
-    const toolResult =
-      execution.result;
-
-    const content =
-      toolResult.status ===
-      "success"
-        ? toolResult.output
-        : {
-            error:
-              toolResult.error,
-          };
-
-    history.addToolResult(
-      call.id,
-      content,
-    );
-  }
-}
-
-const error =
-  `Maximum conversation turns exceeded: ${this.maxTurns}`;
-
-runtimeState.status = "failed";
-runtimeState.error = error;
-runtimeState.messages =
-  history.getMessages();
-
-await this.events?.emit({
-  type: "agent.failed",
-  context,
-  error,
-});
-
-return {
-  status: "failed",
-  runId: context.runId,
-  error,
-  state: {
-    agent,
-    context,
-    history:
-      history.getMessages(),
-    runtimeState,
-  },
-};
-
-}
 }

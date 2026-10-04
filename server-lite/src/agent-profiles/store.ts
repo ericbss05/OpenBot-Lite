@@ -22,6 +22,7 @@ export type AgentProfile = {
   name: string;
   title: string | null;
   roleDescription: string | null;
+  provider: string;
   model: string;
   visibility: "public" | "private";
   endpoint: string | null;
@@ -37,6 +38,10 @@ const createSchema = z.object({
   title: z.string().optional(),
 
   roleDescription: z.string().optional(),
+
+  provider: z.string().min(1),
+
+  model: z.string().min(1),
 
   visibility: z.enum([
     "public",
@@ -72,6 +77,11 @@ const updateSchema = z.object({
   roleDescription: z
     .string()
     .nullable()
+    .optional(),
+
+  provider: z
+    .string()
+    .min(1)
     .optional(),
 
   model: z
@@ -191,84 +201,100 @@ export function createAgentStore(
       : null;
   }
 
-async function create(
-  input: z.infer<typeof createSchema>,
-  ownerUserId: string,
-): Promise<AgentProfile> {
-  const parsed = createSchema.parse(input);
+  async function create(
+    input: z.infer<
+      typeof createSchema
+    >,
+    ownerUserId: string,
+  ): Promise<AgentProfile> {
+    const parsed =
+      createSchema.parse(input);
 
-  const endpoint = parsed.endpoint
-    ? validateEndpoint(parsed.endpoint)
-    : null;
+    const endpoint =
+      parsed.endpoint
+        ? validateEndpoint(
+            parsed.endpoint,
+          )
+        : null;
 
-  const now = new Date();
+    const now = new Date();
 
-  const agentId = randomUUID();
-  const channelId = randomUUID();
-  const threadId = randomUUID();
+    const agentId =
+      randomUUID();
 
-  const agentRow = {
-    id: agentId,
+    const channelId =
+      randomUUID();
 
-    name: parsed.name,
+    const threadId =
+      randomUUID();
 
-    title:
-      parsed.title ?? null,
+    const agentRow = {
+      id: agentId,
 
-    roleDescription:
-      parsed.roleDescription ?? null,
+      name: parsed.name,
 
-    model: "gpt-6-luna",
+      title:
+        parsed.title ?? null,
 
-    visibility: "private" as const,
+      roleDescription:
+        parsed.roleDescription ?? null,
 
-    isPrimary: true,
-    
-    endpoint,
+      provider: parsed.provider,
 
-    avatarPalette:
-      parsed.avatarPalette ?? 0,
+      model: parsed.model,
 
-    avatarReversed:
-      parsed.avatarReversed ?? false,
+      visibility:
+        "private" as const,
 
-    ownerUserId,
+      isPrimary: true,
 
-    createdAt: now,
-  };
+      endpoint,
 
-  await db.transaction(async (tx) => {
-    // 1. Create the agent
-    await tx
-      .insert(agentProfiles)
-      .values(agentRow);
+      avatarPalette:
+        parsed.avatarPalette ?? 0,
 
-    // 2. Create its default channel
-    await tx
-      .insert(channels)
-      .values({
-        id: channelId,
-        name: "General",
-        threadId,
-        active: true,
-        lastMessageAt: null,
-        createdAt: now,
-        userId: ownerUserId,
-      });
+      avatarReversed:
+        parsed.avatarReversed ?? false,
 
-    // 3. Attach the new agent as primary
-    await tx
-      .insert(channelAgents)
-      .values({
-        channelId,
-        agentId,
-        role: "primary",
-        createdAt: now,
-      });
-  });
+      ownerUserId,
 
-  return mapRow(agentRow);
-}
+      createdAt: now,
+    };
+
+    await db.transaction(
+      async (tx) => {
+        // 1. Create the agent
+        await tx
+          .insert(agentProfiles)
+          .values(agentRow);
+
+        // 2. Create its default channel
+        await tx
+          .insert(channels)
+          .values({
+            id: channelId,
+            name: "General",
+            threadId,
+            active: true,
+            lastMessageAt: null,
+            createdAt: now,
+            userId: ownerUserId,
+          });
+
+        // 3. Attach the new agent as primary
+        await tx
+          .insert(channelAgents)
+          .values({
+            channelId,
+            agentId,
+            role: "primary",
+            createdAt: now,
+          });
+      },
+    );
+
+    return mapRow(agentRow);
+  }
 
   async function update(
     id: string,
@@ -290,7 +316,7 @@ async function create(
       resolveEndpoint(
         parsed.endpoint,
         existing.endpoint,
-        allowPrivateHosts
+        allowPrivateHosts,
       );
 
     const [row] =
@@ -313,9 +339,16 @@ async function create(
               parsed.roleDescription,
           }),
 
+          ...(parsed.provider !==
+            undefined && {
+            provider:
+              parsed.provider,
+          }),
+
           ...(parsed.model !==
             undefined && {
-            model: parsed.model,
+            model:
+              parsed.model,
           }),
 
           ...(parsed.visibility !==
@@ -378,7 +411,7 @@ async function create(
       resolveEndpoint(
         parsed.endpoint,
         existing.endpoint,
-        allowPrivateHosts
+        allowPrivateHosts,
       );
 
     const [row] =
@@ -401,9 +434,16 @@ async function create(
               parsed.roleDescription,
           }),
 
+          ...(parsed.provider !==
+            undefined && {
+            provider:
+              parsed.provider,
+          }),
+
           ...(parsed.model !==
             undefined && {
-            model: parsed.model,
+            model:
+              parsed.model,
           }),
 
           ...(parsed.visibility !==
@@ -516,6 +556,7 @@ async function create(
             | "public"
             | "private";
           endpoint?: string;
+          provider?: string;
           model?: string;
         }>;
       };
@@ -551,14 +592,18 @@ async function create(
             roleDescription:
               agent.roleDescription,
 
+            provider:
+              agent.provider ??
+              existing.provider,
+
+            model:
+              agent.model ??
+              existing.model,
+
             visibility:
               agent.visibility,
 
             endpoint,
-
-            model:
-              agent.model ??
-              "gpt-6-luna",
           })
           .where(
             eq(
@@ -579,6 +624,10 @@ async function create(
             roleDescription:
               agent.roleDescription,
 
+            provider:
+              agent.provider ??
+              "openai",
+
             model:
               agent.model ??
               "gpt-6-luna",
@@ -594,7 +643,8 @@ async function create(
 
             ownerUserId: null,
 
-            createdAt: new Date(),
+            createdAt:
+              new Date(),
           });
       }
     }
@@ -614,7 +664,10 @@ async function create(
 }
 
 function resolveEndpoint(
-  value: string | null | undefined,
+  value:
+    | string
+    | null
+    | undefined,
   current: string | null,
   allowPrivateHosts: boolean,
 ): string | null {
@@ -653,6 +706,8 @@ function mapRow(
 
     roleDescription:
       row.roleDescription,
+
+    provider: row.provider,
 
     model: row.model,
 

@@ -1,7 +1,7 @@
 import { db } from "../../db";
 
 import { createAgentStore } from "../store";
-import { OpenAIProvider } from "../llm/openai";
+import { OpenAIProvider } from "../llm/providers/openai";
 import { AgentRuntime } from "../runtime/runtime";
 import { ToolRegistry } from "../tools/tools";
 

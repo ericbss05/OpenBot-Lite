@@ -3,7 +3,7 @@ export * from "./agent";
 export * from "./prompt/system";
 
 export * from "./llm/provider";
-export * from "./llm/openai";
+export * from "./llm/providers/openai";
 
 export * from "./tools/tools";
 export * from "./tools/composio";

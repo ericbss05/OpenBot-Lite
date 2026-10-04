@@ -12,7 +12,9 @@ export class RuntimeHistory {
     return this.messages;
   }
 
-  addUserMessage(content: string): void {
+  addUserMessage(
+    content: string,
+  ): void {
     this.messages.push({
       role: "user",
       content,
@@ -40,16 +42,21 @@ export class RuntimeHistory {
 
   addToolResult(
     toolCallId: string,
+    toolName: string,
     result: unknown,
   ): void {
     this.messages.push({
       role: "tool",
       toolCallId,
-      content: this.serialize(result),
+      toolName,
+      content:
+        this.serialize(result),
     });
   }
 
-  private serialize(value: unknown): string {
+  private serialize(
+    value: unknown,
+  ): string {
     if (typeof value === "string") {
       return value;
     }

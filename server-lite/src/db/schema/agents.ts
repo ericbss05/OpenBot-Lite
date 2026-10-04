@@ -21,7 +21,11 @@ export const agentProfiles = pgTable(
     roleDescription:
       text("role_description"),
 
-    model: text("model")
+    provider: text("provider")
+  .notNull()
+  .default("openai"),
+
+model: text("model")
   .notNull()
   .default("gpt-6-luna"),
 

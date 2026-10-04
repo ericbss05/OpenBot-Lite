@@ -194,7 +194,7 @@ export const agentProfiles = pgTable("agent_profiles", {
 	endpoint: text(),
 	ownerUserId: text("owner_user_id"),
 	createdAt: timestamp("created_at", { mode: 'string' }).defaultNow().notNull(),
-	model: text().default('gpt-6-luna').notNull(),
+	model: text().notNull(),
 	avatarPalette: integer("avatar_palette").default(0).notNull(),
 	avatarReversed: boolean("avatar_reversed").default(false).notNull(),
 }, (table) => [

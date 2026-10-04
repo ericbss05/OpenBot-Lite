@@ -84,9 +84,10 @@ export class RuntimeLoop {
                 };
 
           history.addToolResult(
-            execution.toolCall.id,
-            output,
-          );
+  execution.toolCall.id,
+  execution.toolCall.toolId,
+  output,
+);
         }
       }
 
@@ -173,13 +174,13 @@ export class RuntimeLoop {
             "denied"
           ) {
             history.addToolResult(
-              call.id,
-              {
-                error:
-                  execution.reason ??
-                  "Tool execution denied by Gateway.",
-              },
-            );
+  call.id,
+  call.toolId,
+  {
+    error:
+      "Tool execution returned no result.",
+  },
+);
 
             continue;
           }
@@ -199,9 +200,10 @@ export class RuntimeLoop {
                   };
 
             history.addToolResult(
-              call.id,
-              output,
-            );
+  execution.toolCall.id,
+  execution.toolCall.toolId,
+  output,
+);
           }
         }
       }
