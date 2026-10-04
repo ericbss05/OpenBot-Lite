@@ -1,17 +1,38 @@
-import type { Agent } from "./agent";
+import type {
+  Agent,
+} from "./agent";
+
 import type {
   LLMMessage,
   LLMToolCall,
   LLMProvider,
 } from "./llm/provider";
-import type { ToolRegistry } from "./tools/tools";
-import type { AgentRuntime } from "./runtime/runtime";
+
+import {
+  isUserInteractionToolCall,
+  parseUserInteraction,
+} from "./llm/user-interaction";
+
+import type {
+  ToolRegistry,
+} from "./tools/tools";
+
+import type {
+  AgentRuntime,
+} from "./runtime/runtime";
+
 import type {
   AgentEventSink,
   RunContext,
 } from "./events/events";
-import { RuntimeHistory } from "./runtime/history";
-import type { RuntimeState } from "./runtime/state";
+
+import {
+  RuntimeHistory,
+} from "./runtime/history";
+
+import type {
+  RuntimeState,
+} from "./runtime/state";
 
 export type ConversationStatus =
   | "completed"
@@ -27,20 +48,32 @@ export interface ConversationState {
 
 export interface ConversationResult {
   status: ConversationStatus;
+
   runId: string;
+
   content?: string;
+
   error?: string;
+
   pendingApprovalId?: string;
+
   pendingToolCall?: LLMToolCall;
+
+  pendingInteraction?: RuntimeState["pendingInteraction"];
+
   state: ConversationState;
 }
 
 export class AgentConversation {
   constructor(
     private readonly llm: LLMProvider,
+
     private readonly tools: ToolRegistry,
+
     private readonly runtime: AgentRuntime,
+
     private readonly events?: AgentEventSink,
+
     private readonly maxTurns = 10,
   ) {}
 
@@ -49,32 +82,49 @@ export class AgentConversation {
     messages: LLMMessage[],
     context: RunContext,
   ): Promise<ConversationResult> {
-    if (messages.length === 0) {
+    if (
+      messages.length === 0
+    ) {
       throw new Error(
         "Cannot run conversation without messages.",
       );
     }
 
-    if (context.agentId !== agent.id) {
+    if (
+      context.agentId !==
+      agent.id
+    ) {
       throw new Error(
         "RunContext agentId does not match the conversation agent.",
       );
     }
 
-    const history = new RuntimeHistory([
-      ...messages,
-    ]);
+    const history =
+      new RuntimeHistory([
+        ...messages,
+      ]);
 
-    const runtimeState: RuntimeState = {
-      runId: context.runId,
-      context,
-      agent,
-      status: "pending",
-      messages: [...messages],
-      turn: 0,
-      maxTurns: 1,
-      toolResults: [],
-    };
+    const runtimeState:
+      RuntimeState = {
+        runId:
+          context.runId,
+
+        context,
+
+        agent,
+
+        status:
+          "pending",
+
+        messages:
+          [...messages],
+
+        turn: 0,
+
+        maxTurns: 1,
+
+        toolResults: [],
+      };
 
     return this.continueConversation(
       agent,
@@ -86,10 +136,13 @@ export class AgentConversation {
 
   async resume(
     state: ConversationState,
-    decision: "approved" | "rejected",
+    decision:
+      | "approved"
+      | "rejected",
   ): Promise<ConversationResult> {
     const pendingToolCall =
-      state.runtimeState.pendingToolCall;
+      state.runtimeState
+        .pendingToolCall;
 
     if (!pendingToolCall) {
       throw new Error(
@@ -108,7 +161,10 @@ export class AgentConversation {
         state.history,
       );
 
-    if (decision === "rejected") {
+    if (
+      decision ===
+      "rejected"
+    ) {
       history.addToolResult(
         pendingToolCall.id,
         pendingToolCall.toolId,
@@ -137,7 +193,8 @@ export class AgentConversation {
 
     const lastToolResult =
       runtimeState.toolResults[
-        runtimeState.toolResults.length - 1
+        runtimeState.toolResults.length -
+          1
       ];
 
     if (!lastToolResult) {
@@ -147,7 +204,8 @@ export class AgentConversation {
     }
 
     const content =
-      lastToolResult.status === "success"
+      lastToolResult.status ===
+      "success"
         ? lastToolResult.output
         : {
             error:
@@ -177,6 +235,29 @@ export class AgentConversation {
     );
   }
 
+  async resumeUserInteraction(
+    state: ConversationState,
+    answer: string,
+  ): Promise<ConversationResult> {
+    const runtimeState =
+      this.runtime.applyUserInteractionAnswer(
+        state.runtimeState,
+        answer,
+      );
+
+    const history =
+      new RuntimeHistory(
+        runtimeState.messages,
+      );
+
+    return this.continueConversation(
+      state.agent,
+      state.context,
+      history,
+      runtimeState,
+    );
+  }
+
   private async continueConversation(
     agent: Agent,
     context: RunContext,
@@ -185,7 +266,8 @@ export class AgentConversation {
   ): Promise<ConversationResult> {
     for (
       let turn = 0;
-      turn < this.maxTurns;
+      turn <
+      this.maxTurns;
       turn += 1
     ) {
       console.log(
@@ -193,22 +275,29 @@ export class AgentConversation {
       );
 
       await this.events?.emit({
-        type: "llm.started",
+        type:
+          "llm.started",
+
         context,
       });
 
       const response =
         await this.llm.generate({
           agent,
+
           messages:
             history.getMessages(),
-          tools: this.tools.list(
-            agent.tools,
-          ),
+
+          tools:
+            this.tools.list(
+              agent.tools,
+            ),
         });
 
       await this.events?.emit({
-        type: "llm.completed",
+        type:
+          "llm.completed",
+
         context,
       });
 
@@ -217,7 +306,10 @@ export class AgentConversation {
         response,
       );
 
-      if (response.type === "text") {
+      if (
+        response.type ===
+        "text"
+      ) {
         history.addAssistantMessage(
           response.content,
         );
@@ -232,22 +324,33 @@ export class AgentConversation {
           history.getMessages();
 
         await this.events?.emit({
-          type: "agent.completed",
+          type:
+            "agent.completed",
+
           context,
+
           output:
             response.content,
         });
 
         return {
-          status: "completed",
-          runId: context.runId,
+          status:
+            "completed",
+
+          runId:
+            context.runId,
+
           content:
             response.content,
+
           state: {
             agent,
+
             context,
+
             history:
               history.getMessages(),
+
             runtimeState,
           },
         };
@@ -257,12 +360,96 @@ export class AgentConversation {
         response.calls,
       );
 
+      const interactionCalls =
+        response.calls.filter(
+          isUserInteractionToolCall,
+        );
+
+      if (
+        interactionCalls.length >
+        1
+      ) {
+        throw new Error(
+          "The model requested multiple user interactions in the same turn.",
+        );
+      }
+
+      if (
+        interactionCalls.length ===
+        1
+      ) {
+        if (
+          response.calls.length !==
+          1
+        ) {
+          throw new Error(
+            "A user interaction must be the only tool call in an LLM response.",
+          );
+        }
+
+        const call =
+          interactionCalls[0];
+
+        const interaction =
+          parseUserInteraction(
+            call,
+          );
+
+        runtimeState.status =
+          "waiting";
+
+        runtimeState.pendingInteraction =
+          {
+            toolCallId:
+              call.id,
+
+            interaction,
+          };
+
+        runtimeState.messages =
+          history.getMessages();
+
+        await this.events?.emit({
+          type:
+            "user_interaction.required",
+
+          context,
+
+          interaction,
+        });
+
+        return {
+          status:
+            "waiting",
+
+          runId:
+            context.runId,
+
+          pendingInteraction:
+            runtimeState.pendingInteraction,
+
+          state: {
+            agent,
+
+            context,
+
+            history:
+              history.getMessages(),
+
+            runtimeState,
+          },
+        };
+      }
+
       for (const call of response.calls) {
         console.log(
           "[AGENT] tool requested:",
           {
-            toolId: call.toolId,
-            arguments: call.arguments,
+            toolId:
+              call.toolId,
+
+            arguments:
+              call.arguments,
           },
         );
 
@@ -289,16 +476,26 @@ export class AgentConversation {
             history.getMessages();
 
           return {
-            status: "waiting",
-            runId: context.runId,
+            status:
+              "waiting",
+
+            runId:
+              context.runId,
+
             pendingApprovalId:
               execution.approvalId,
-            pendingToolCall: call,
+
+            pendingToolCall:
+              call,
+
             state: {
               agent,
+
               context,
+
               history:
                 history.getMessages(),
+
               runtimeState,
             },
           };
@@ -321,7 +518,9 @@ export class AgentConversation {
           continue;
         }
 
-        if (!execution.result) {
+        if (
+          !execution.result
+        ) {
           history.addToolResult(
             call.id,
             call.toolId,
@@ -357,26 +556,41 @@ export class AgentConversation {
     const error =
       `Maximum conversation turns exceeded: ${this.maxTurns}`;
 
-    runtimeState.status = "failed";
-    runtimeState.error = error;
+    runtimeState.status =
+      "failed";
+
+    runtimeState.error =
+      error;
+
     runtimeState.messages =
       history.getMessages();
 
     await this.events?.emit({
-      type: "agent.failed",
+      type:
+        "agent.failed",
+
       context,
+
       error,
     });
 
     return {
-      status: "failed",
-      runId: context.runId,
+      status:
+        "failed",
+
+      runId:
+        context.runId,
+
       error,
+
       state: {
         agent,
+
         context,
+
         history:
           history.getMessages(),
+
         runtimeState,
       },
     };

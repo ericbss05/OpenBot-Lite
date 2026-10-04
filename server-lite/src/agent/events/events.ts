@@ -1,3 +1,7 @@
+import type {
+  UserInteraction,
+} from "../llm/user-interaction";
+
 export interface RunContext {
   runId: string;
   channelId?: string;
@@ -8,7 +12,10 @@ export interface RunContext {
 export interface EventMessage {
   id: string;
   channelId: string;
-  role: "user" | "assistant" | "system";
+  role:
+    | "user"
+    | "assistant"
+    | "system";
   content: string;
   agentId: string | null;
   createdAt: string;
@@ -20,7 +27,8 @@ export type AgentEvent =
   // ─────────────────────────────────────────────
 
   | {
-      type: "channel.connected";
+      type:
+        "channel.connected";
       context: RunContext;
     }
 
@@ -29,13 +37,15 @@ export type AgentEvent =
   // ─────────────────────────────────────────────
 
   | {
-      type: "message.created";
+      type:
+        "message.created";
       context: RunContext;
       message: EventMessage;
     }
 
   | {
-      type: "message.updated";
+      type:
+        "message.updated";
       context: RunContext;
       message: EventMessage;
     }
@@ -50,7 +60,8 @@ export type AgentEvent =
     }
 
   | {
-      type: "run.completed";
+      type:
+        "run.completed";
       context: RunContext;
     }
 
@@ -70,7 +81,8 @@ export type AgentEvent =
     }
 
   | {
-      type: "llm.completed";
+      type:
+        "llm.completed";
       context: RunContext;
     }
 
@@ -83,15 +95,21 @@ export type AgentEvent =
       context: RunContext;
       toolCallId: string;
       toolId: string;
-      arguments: Record<string, unknown>;
+      arguments: Record<
+        string,
+        unknown
+      >;
     }
 
   | {
-      type: "tool.completed";
+      type:
+        "tool.completed";
       context: RunContext;
       toolCallId: string;
       toolId: string;
-      status: "success" | "error";
+      status:
+        | "success"
+        | "error";
       result?: unknown;
       error?: string;
     }
@@ -101,16 +119,21 @@ export type AgentEvent =
   // ─────────────────────────────────────────────
 
   | {
-      type: "approval.required";
+      type:
+        "approval.required";
       context: RunContext;
       approvalId: string;
       toolCallId: string;
       toolId: string;
-      arguments: Record<string, unknown>;
+      arguments: Record<
+        string,
+        unknown
+      >;
     }
 
   | {
-      type: "approval.approved";
+      type:
+        "approval.approved";
       context: RunContext;
       approvalId: string;
       toolCallId: string;
@@ -118,11 +141,23 @@ export type AgentEvent =
     }
 
   | {
-      type: "approval.rejected";
+      type:
+        "approval.rejected";
       context: RunContext;
       approvalId: string;
       toolCallId: string;
       toolId: string;
+    }
+
+  // ─────────────────────────────────────────────
+  // User interaction
+  // ─────────────────────────────────────────────
+
+  | {
+      type:
+        "user_interaction.required";
+      context: RunContext;
+      interaction: UserInteraction;
     }
 
   // ─────────────────────────────────────────────
@@ -135,7 +170,8 @@ export type AgentEvent =
     }
 
   | {
-      type: "agent.completed";
+      type:
+        "agent.completed";
       context: RunContext;
       output: string;
     }
@@ -151,14 +187,16 @@ export type AgentEvent =
   // ─────────────────────────────────────────────
 
   | {
-      type: "subagent.started";
+      type:
+        "subagent.started";
       context: RunContext;
       subagentId: string;
       parentAgentId: string;
     }
 
   | {
-      type: "subagent.completed";
+      type:
+        "subagent.completed";
       context: RunContext;
       subagentId: string;
       parentAgentId: string;
@@ -166,7 +204,8 @@ export type AgentEvent =
     }
 
   | {
-      type: "subagent.failed";
+      type:
+        "subagent.failed";
       context: RunContext;
       subagentId: string;
       parentAgentId: string;
@@ -174,5 +213,173 @@ export type AgentEvent =
     };
 
 export interface AgentEventSink {
-  emit(event: AgentEvent): void | Promise<void>;
+  emit(
+    event: AgentEvent,
+  ):
+    | void
+    | Promise<void>;
 }
+
+type EventListener = (
+  event: AgentEvent,
+) => void;
+
+interface Subscriber {
+  listener: EventListener;
+}
+
+export class EventHub
+  implements AgentEventSink
+{
+  private readonly subscribers =
+    new Map<
+      string,
+      Set<Subscriber>
+    >();
+
+  async emit(
+    event: AgentEvent,
+  ): Promise<void> {
+    console.log(
+      "[EVENT HUB] Emit:",
+      {
+        type:
+          event.type,
+
+        channelId:
+          event.context.channelId,
+
+        runId:
+          event.context.runId,
+      },
+    );
+
+    const channelId =
+      event.context.channelId;
+
+    if (!channelId) {
+      console.log(
+        "[EVENT HUB] Emit ignored: no channelId",
+      );
+
+      return;
+    }
+
+    const subscribers =
+      this.subscribers.get(
+        channelId,
+      );
+
+    console.log(
+      "[EVENT HUB] Subscribers:",
+      {
+        channelId,
+        count:
+          subscribers?.size ?? 0,
+      },
+    );
+
+    if (!subscribers) {
+      console.log(
+        "[EVENT HUB] Emit ignored: no subscribers",
+      );
+
+      return;
+    }
+
+    for (const subscriber of subscribers) {
+      try {
+        subscriber.listener(
+          event,
+        );
+      } catch (error) {
+        console.error(
+          "[EVENT HUB] Subscriber error:",
+          error,
+        );
+      }
+    }
+  }
+
+  subscribe(
+    channelId: string,
+    listener: EventListener,
+  ): () => void {
+    let subscribers =
+      this.subscribers.get(
+        channelId,
+      );
+
+    if (!subscribers) {
+      subscribers =
+        new Set();
+
+      this.subscribers.set(
+        channelId,
+        subscribers,
+      );
+    }
+
+    const subscriber: Subscriber = {
+      listener,
+    };
+
+    subscribers.add(
+      subscriber,
+    );
+
+    console.log(
+      "[EVENT HUB] Subscriber connected:",
+      {
+        channelId,
+        subscribers:
+          subscribers.size,
+      },
+    );
+
+    let unsubscribed = false;
+
+    return () => {
+      if (unsubscribed) {
+        return;
+      }
+
+      unsubscribed = true;
+
+      subscribers?.delete(
+        subscriber,
+      );
+
+      if (
+        subscribers &&
+        subscribers.size === 0
+      ) {
+        this.subscribers.delete(
+          channelId,
+        );
+      }
+
+      console.log(
+        "[EVENT HUB] Subscriber disconnected:",
+        {
+          channelId,
+          subscribers:
+            subscribers?.size ?? 0,
+        },
+      );
+    };
+  }
+
+  subscriberCount(
+    channelId: string,
+  ): number {
+    return (
+      this.subscribers.get(
+        channelId,
+      )?.size ?? 0
+    );
+  }
+}
+
+export const eventHub =
+  new EventHub();

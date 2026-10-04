@@ -3,8 +3,8 @@ import { cors } from "hono/cors";
 
 import { auth } from "./auth/auth";
 import type {
-  AppVariables,
-  createAuthMiddleware,
+AppVariables,
+createAuthMiddleware,
 } from "./auth/guards";
 import { requireUser } from "./auth/guards";
 import type { LiteConfig } from "./config";
@@ -25,243 +25,260 @@ import { createAgentToolRoutes } from "./routes/agent-tools";
 import { createApprovalRoutes } from "./routes/approvals";
 import { createChannelRoutes } from "./routes/channels";
 import { createGatewayRoutes } from "./routes/gateway";
+import { createInteractionRoutes } from "./routes/interactions";
 import { createPluginRoutes } from "./routes/plugins";
 import { createRoutineRoutes } from "./routes/routines";
 import { createToolRoutes } from "./routes/tools";
 import { eventsRoute } from "./routes/events";
 
 type Auth =
-  ReturnType<typeof createAuthMiddleware>;
+ReturnType<typeof createAuthMiddleware>;
 
 export function createApp(deps: {
-  config: LiteConfig;
-  auth: Auth;
+config: LiteConfig;
+auth: Auth;
 
-  agents: AgentStore;
-  channels: ChannelService;
+agents: AgentStore;
+channels: ChannelService;
 
-  gateway: Gateway;
-  audit: AuditStore;
+gateway: Gateway;
+audit: AuditStore;
 
-  queue: WorkQueue;
-  routines: RoutineStore;
-  plugins: PluginStore;
-  tools: ToolStore;
+queue: WorkQueue;
+routines: RoutineStore;
+plugins: PluginStore;
+tools: ToolStore;
 
-  approvals: ApprovalStore;
+approvals: ApprovalStore;
 
-  resumeApproval: (
-    approvalId: string,
-    decision: "approved" | "rejected",
-  ) => Promise<unknown>;
+resumeApproval: (
+approvalId: string,
+decision: "approved" | "rejected",
+) => Promise<unknown>;
 
-  agentTools: ReturnType<
-    typeof createAgentToolRoutes
-  >;
-}) {
-  const app =
-    new Hono<{
-      Variables: AppVariables;
-    }>();
+resumeUserInteraction: (
+runId: string,
+answer: string,
+) => Promise<unknown>;
 
-  // ============================================================
-  // CORS
-  // ============================================================
+agentTools: ReturnType<typeof createAgentToolRoutes> ;
+ }) {
+ const app =
+ new Hono<{
+ Variables: AppVariables;
+ }>();
 
-  app.use(
-    "*",
-    cors({
-      origin: "http://localhost:3000",
-      credentials: true,
-    }),
-  );
+// ============================================================
+// CORS
+// ============================================================
 
-  // ============================================================
-  // Better Auth
-  // ============================================================
+app.use(
+"*",
+cors({
+origin: "http://localhost:3000",
+credentials: true,
+}),
+);
 
-  app.all(
-    "/api/auth/*",
-    (c) => {
-      return auth.handler(
-        c.req.raw,
-      );
-    },
-  );
+// ============================================================
+// Better Auth
+// ============================================================
 
-  // ============================================================
-  // Health
-  // ============================================================
+app.all(
+"/api/auth/*",
+(c) => {
+return auth.handler(
+c.req.raw,
+);
+},
+);
 
-  app.get(
-    "/health",
-    (c) =>
-      c.json({
-        status: "ok",
-      }),
-  );
+// ============================================================
+// Health
+// ============================================================
 
-  // ============================================================
-  // Capabilities
-  // ============================================================
+app.get(
+"/health",
+(c) =>
+c.json({
+status: "ok",
+}),
+);
 
-  app.get(
-    "/api/capabilities",
-    (c) =>
-      c.json({
-        mode: "lite",
-        durableHistory: true,
-        generativeUi: false,
-        transcription: false,
-        voice: false,
-        authProviders: [
-          "emailAndPassword",
-        ],
-        ssoConfigured: false,
-        singleUser:
-          deps.config.singleUser,
-      }),
-  );
+// ============================================================
+// Capabilities
+// ============================================================
 
-  // ============================================================
-  // Authentication middleware
-  // ============================================================
+app.get(
+"/api/capabilities",
+(c) =>
+c.json({
+mode: "lite",
+durableHistory: true,
+generativeUi: false,
+transcription: false,
+voice: false,
+authProviders: [
+"emailAndPassword",
+],
+ssoConfigured: false,
+singleUser:
+deps.config.singleUser,
+}),
+);
 
-  app.use(
-    "/api/*",
-    deps.auth,
-  );
+// ============================================================
+// Authentication middleware
+// ============================================================
 
-  // ============================================================
-  // Me
-  // ============================================================
+app.use(
+"/api/*",
+deps.auth,
+);
 
-  app.get(
-    "/api/me",
-    (c) => {
-      const user =
-        requireUser(c);
+// ============================================================
+// Me
+// ============================================================
 
-      return c.json(user);
-    },
-  );
+app.get(
+"/api/me",
+(c) => {
+const user =
+requireUser(c);
 
-  // ============================================================
-  // Agents
-  // ============================================================
+  return c.json(user);
+},
 
-  app.route(
-    "/api/agents",
-    createAgentRoutes({
-      agents: deps.agents,
-      audit: deps.audit,
-    }),
-  );
+);
 
-  // ============================================================
-  // Agent Tools
-  // ============================================================
+// ============================================================
+// Agents
+// ============================================================
 
-  app.route(
-    "/api/agents",
-    deps.agentTools,
-  );
+app.route(
+"/api/agents",
+createAgentRoutes({
+agents: deps.agents,
+audit: deps.audit,
+}),
+);
 
-  // ============================================================
-  // Approvals
-  // ============================================================
+// ============================================================
+// Agent Tools
+// ============================================================
 
-  app.route(
-    "/api/approvals",
-    createApprovalRoutes({
-      approvals: deps.approvals,
-      audit: deps.audit,
-      resumeApproval:
-        deps.resumeApproval,
-    }),
-  );
+app.route(
+"/api/agents",
+deps.agentTools,
+);
 
-  // ============================================================
-  // Channels
-  // ============================================================
+// ============================================================
+// Approvals
+// ============================================================
 
-  app.route(
-    "/api/channels",
-    createChannelRoutes({
-      channels: deps.channels,
-      audit: deps.audit,
-      queue: deps.queue,
-    }),
-  );
+app.route(
+"/api/approvals",
+createApprovalRoutes({
+approvals: deps.approvals,
+audit: deps.audit,
+resumeApproval:
+deps.resumeApproval,
+}),
+);
 
-  // ============================================================
-  // Tools
-  // ============================================================
+// ============================================================
+// User Interactions
+// ============================================================
 
-  app.route(
-    "/api/tools",
-    createToolRoutes({
-      tools: deps.tools,
-    }),
-  );
+app.route(
+"/api/interactions",
+createInteractionRoutes({
+resumeUserInteraction:
+deps.resumeUserInteraction,
+}),
+);
 
-  // ============================================================
-  // Gateway
-  // ============================================================
+// ============================================================
+// Channels
+// ============================================================
 
-  app.route(
-    "/api/gateway",
-    createGatewayRoutes({
-      gateway: deps.gateway,
-      audit: deps.audit,
-    }),
-  );
+app.route(
+"/api/channels",
+createChannelRoutes({
+channels: deps.channels,
+audit: deps.audit,
+queue: deps.queue,
+}),
+);
 
-  // ============================================================
-  // Routines
-  // ============================================================
+// ============================================================
+// Tools
+// ============================================================
 
-  app.route(
-    "/api/routines",
-    createRoutineRoutes({
-      routines: deps.routines,
-      audit: deps.audit,
-    }),
-  );
+app.route(
+"/api/tools",
+createToolRoutes({
+tools: deps.tools,
+}),
+);
 
-  // ============================================================
-  // Plugins
-  // ============================================================
+// ============================================================
+// Gateway
+// ============================================================
 
-  app.route(
-    "/api/plugins",
-    createPluginRoutes({
-      plugins: deps.plugins,
-      gateway: deps.gateway,
-      audit: deps.audit,
-    }),
-  );
+app.route(
+"/api/gateway",
+createGatewayRoutes({
+gateway: deps.gateway,
+audit: deps.audit,
+}),
+);
 
-  // ============================================================
-  // Admin
-  // ============================================================
+// ============================================================
+// Routines
+// ============================================================
 
-  app.route(
-    "/api/admin",
-    createAdminRoutes({
-      audit: deps.audit,
-      gateway: deps.gateway,
-    }),
-  );
+app.route(
+"/api/routines",
+createRoutineRoutes({
+routines: deps.routines,
+audit: deps.audit,
+}),
+);
 
-  // ============================================================
-  // Events
-  // ============================================================
+// ============================================================
+// Plugins
+// ============================================================
 
-  app.get(
-    "/api/channels/:channelId/events",
-    eventsRoute,
-  );
+app.route(
+"/api/plugins",
+createPluginRoutes({
+plugins: deps.plugins,
+gateway: deps.gateway,
+audit: deps.audit,
+}),
+);
 
-  return app;
+// ============================================================
+// Admin
+// ============================================================
+
+app.route(
+"/api/admin",
+createAdminRoutes({
+audit: deps.audit,
+gateway: deps.gateway,
+}),
+);
+
+// ============================================================
+// Events
+// ============================================================
+
+app.get(
+"/api/channels/:channelId/events",
+eventsRoute,
+);
+
+return app;
 }

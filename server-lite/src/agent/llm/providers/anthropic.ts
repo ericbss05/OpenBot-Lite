@@ -18,6 +18,10 @@ import type {
   ToolDefinition,
 } from "../../tools/tools";
 
+import {
+  USER_INTERACTION_TOOL_DEFINITION,
+} from "../user-interaction";
+
 export class AnthropicProvider
   implements LLMProvider
 {
@@ -32,9 +36,10 @@ export class AnthropicProvider
       );
     }
 
-    this.provider = createAnthropic({
-      apiKey,
-    });
+    this.provider =
+      createAnthropic({
+        apiKey,
+      });
   }
 
   async generate(
@@ -45,38 +50,50 @@ export class AnthropicProvider
         model: this.provider(
           request.agent.model,
         ),
+
         system:
           request.agent.instructions,
+
         messages:
           request.messages.map(
             toAIMessage,
           ),
+
         tools:
-          toAISDKTools(request.tools),
+          toAISDKTools(
+            request.tools,
+          ),
       });
 
     if (
-      response.toolCalls.length > 0
+      response.toolCalls.length >
+      0
     ) {
       return {
         type: "tool_calls",
-        calls: response.toolCalls.map(
-          (call) => ({
-            id: call.toolCallId,
-            toolId: call.toolName,
-            arguments:
-              call.input as Record<
-                string,
-                unknown
-              >,
-          }),
-        ),
+
+        calls:
+          response.toolCalls.map(
+            (call) => ({
+              id: call.toolCallId,
+
+              toolId:
+                call.toolName,
+
+              arguments:
+                call.input as Record<
+                  string,
+                  unknown
+                >,
+            }),
+          ),
       };
     }
 
     return {
       type: "text",
-      content: response.text,
+      content:
+        response.text,
     };
   }
 }
@@ -84,25 +101,35 @@ export class AnthropicProvider
 function toAISDKTools(
   tools: ToolDefinition[],
 ) {
+  const definitions = [
+    ...tools,
+    USER_INTERACTION_TOOL_DEFINITION,
+  ];
+
   return Object.fromEntries(
-    tools.map((tool) => [
-      tool.id,
-      {
-        description:
-          tool.description,
-        inputSchema:
-          jsonSchema(
-            tool.inputSchema,
-          ),
-      },
-    ]),
+    definitions.map(
+      (tool) => [
+        tool.id,
+        {
+          description:
+            tool.description,
+
+          inputSchema:
+            jsonSchema(
+              tool.inputSchema,
+            ),
+        },
+      ],
+    ),
   );
 }
 
 function toAIMessage(
   message: LLMMessage,
 ) {
-  if (message.role === "tool") {
+  if (
+    message.role === "tool"
+  ) {
     if (
       !message.toolCallId ||
       !message.toolName
@@ -114,16 +141,24 @@ function toAIMessage(
 
     return {
       role: "tool" as const,
+
       content: [
         {
-          type: "tool-result" as const,
+          type:
+            "tool-result" as const,
+
           toolCallId:
             message.toolCallId,
+
           toolName:
             message.toolName,
+
           output: {
-            type: "text" as const,
-            value: message.content,
+            type:
+              "text" as const,
+
+            value:
+              message.content,
           },
         },
       ],
@@ -131,26 +166,40 @@ function toAIMessage(
   }
 
   if (
-    message.role === "assistant" &&
+    message.role ===
+      "assistant" &&
     message.toolCalls &&
-    message.toolCalls.length > 0
+    message.toolCalls.length >
+      0
   ) {
     return {
-      role: "assistant" as const,
+      role:
+        "assistant" as const,
+
       content:
         message.toolCalls.map(
           (call) => ({
-            type: "tool-call" as const,
-            toolCallId: call.id,
-            toolName: call.toolId,
-            input: call.arguments,
+            type:
+              "tool-call" as const,
+
+            toolCallId:
+              call.id,
+
+            toolName:
+              call.toolId,
+
+            input:
+              call.arguments,
           }),
         ),
     };
   }
 
   return {
-    role: message.role,
-    content: message.content,
+    role:
+      message.role,
+
+    content:
+      message.content,
   };
 }

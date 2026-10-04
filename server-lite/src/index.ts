@@ -241,6 +241,8 @@ const app =
     tools: toolStore,
     agentTools: agentToolRoutes,
     resumeApproval: turnRunner.resumeApproval,
+    resumeUserInteraction:
+  turnRunner.resumeUserInteraction,
   });
 
 // --------------------------------------------------

@@ -394,23 +394,27 @@ if (result.status === "failed") {
 }
 
 // --------------------------------------------------
-// Runtime waiting for approval
+// Runtime waiting for approval / interaction
 // --------------------------------------------------
 
 if (result.status === "waiting") {
   console.log(
-    "[TURN RUNNER] Conversation waiting for approval",
+    "[TURN RUNNER] Conversation waiting",
     {
       runId: result.runId,
       pendingApprovalId:
         result.pendingApprovalId ??
         null,
+      pendingInteraction:
+        result.pendingInteraction
+          ? "present"
+          : "none",
     },
   );
 
   if (!result.state) {
     throw new Error(
-      `Conversation "${result.runId}" is waiting for approval but returned no state.`,
+      `Conversation "${result.runId}" is waiting but returned no state.`,
     );
   }
 
@@ -422,8 +426,8 @@ if (result.status === "waiting") {
    * pas être perdue.
    *
    * On conserve son état en mémoire afin que la route
-   * d'approbation puisse reprendre exactement cette
-   * conversation plus tard.
+   * d'approbation ou d'interaction puisse reprendre
+   * exactement cette conversation plus tard.
    */
   deps.conversationStore.set(
     result.runId,
@@ -437,6 +441,10 @@ if (result.status === "waiting") {
       pendingApprovalId:
         result.pendingApprovalId ??
         null,
+      pendingInteraction:
+        result.pendingInteraction
+          ? "present"
+          : "none",
     },
   );
 
@@ -640,248 +648,465 @@ console.log(
 
 }
 
-
 async function resumeApproval(
-  approvalId: string,
-  decision: "approved" | "rejected",
+approvalId: string,
+decision: "approved" | "rejected",
 ) {
-  console.log(
-    "[TURN RUNNER] Resuming approval",
-    {
-      approvalId,
-      decision,
-    },
+console.log(
+"[TURN RUNNER] Resuming approval",
+{
+approvalId,
+decision,
+},
+);
+
+const approval =
+  await deps.approvals.get(
+    approvalId,
   );
 
-  const approval =
-    await deps.approvals.get(
-      approvalId,
-    );
+if (!approval) {
+  throw new Error(
+    `Approval "${approvalId}" not found.`,
+  );
+}
 
-  if (!approval) {
-    throw new Error(
-      `Approval "${approvalId}" not found.`,
-    );
-  }
+if (approval.status !== "pending") {
+  throw new Error(
+    `Approval "${approvalId}" is already decided: ${approval.status}`,
+  );
+}
 
-  if (approval.status !== "pending") {
-    throw new Error(
-      `Approval "${approvalId}" is already decided: ${approval.status}`,
-    );
-  }
-
-  const conversationState =
-    deps.conversationStore.get(
-      approval.runId,
-    );
-
-  if (!conversationState) {
-    throw new Error(
-      `Conversation state not found for run "${approval.runId}".`,
-    );
-  }
-
-  if (
-    conversationState.runtimeState.pendingApprovalId !==
-    approvalId
-  ) {
-    throw new Error(
-      "Approval does not match the pending conversation state.",
-    );
-  }
-
-  console.log(
-    "[TURN RUNNER] Conversation state found",
-    {
-      runId: approval.runId,
-      channelId:
-        conversationState.context.channelId,
-      agentId:
-        conversationState.context.agentId,
-    },
+const conversationState =
+  deps.conversationStore.get(
+    approval.runId,
   );
 
-  const runtime =
-    deps.createRuntime(
-      conversationState.context.actorId,
-    );
-
-  const conversation =
-    new AgentConversation(
-      deps.llm,
-      deps.tools,
-      runtime,
-      deps.events,
-    );
-
-  const result =
-    await conversation.resume(
-      conversationState,
-      decision,
-    );
-
-  console.log(
-    "[TURN RUNNER] Resumed conversation result",
-    {
-      status: result.status,
-      runId: result.runId,
-      content:
-        result.content ?? null,
-      error:
-        result.error ?? null,
-    },
+if (!conversationState) {
+  throw new Error(
+    `Conversation state not found for run "${approval.runId}".`,
   );
+}
 
-  if (result.status === "failed") {
-    deps.conversationStore.delete(
-      result.runId,
-    );
-
-    await deps.audit.record(
-      "channel.turn_failed",
-      conversationState.context.actorId,
-      {
-        channelId:
-          conversationState.context.channelId,
-        agentId:
-          conversationState.context.agentId,
-        runId: result.runId,
-        approvalId,
-        error:
-          result.error ??
-          "Conversation failed after approval decision.",
-      },
-    );
-
-    // A user rejection is an expected outcome,
-    // not a server error.
-    if (decision === "rejected") {
-      return result;
-    }
-
-    throw new Error(
-      result.error ??
-        "Conversation failed after approval decision.",
-    );
-  }
-
-  if (result.status === "waiting") {
-    if (!result.state) {
-      throw new Error(
-        "Conversation is waiting again but returned no state.",
-      );
-    }
-
-    deps.conversationStore.set(
-      result.runId,
-      result.state,
-    );
-
-    await deps.audit.record(
-      "channel.agent_waiting",
-      conversationState.context.actorId,
-      {
-        channelId:
-          conversationState.context.channelId,
-        agentId:
-          conversationState.context.agentId,
-        runId: result.runId,
-        pendingApprovalId:
-          result.pendingApprovalId ??
-          null,
-      },
-    );
-
-    return result;
-  }
-
-  if (result.status !== "completed") {
-    throw new Error(
-      `Unexpected conversation status: ${result.status}`,
-    );
-  }
-
-  const reply =
-    result.content?.trim();
-
-  if (!reply) {
-    throw new Error(
-      `Agent "${conversationState.context.agentId}" completed without a response.`,
-    );
-  }
-
-  const channelId =
-    conversationState.context.channelId;
-
-  if (!channelId) {
-    throw new Error(
-      "Conversation context is missing channelId.",
-    );
-  }
-
-  const agentId =
-    conversationState.context.agentId;
-
-  const message =
-    await deps.channels.appendMessage({
-      channelId,
-      role: "assistant",
-      content: reply,
-      agentId,
-    });
-
-  console.log(
-    "[TURN RUNNER] Resumed assistant message saved",
-    {
-      id: message.id,
-      channelId,
-      agentId,
-    },
+if (
+  conversationState.runtimeState.pendingApprovalId !==
+  approvalId
+) {
+  throw new Error(
+    "Approval does not match the pending conversation state.",
   );
+}
 
-  await deps.events?.emit({
-    type: "message.created",
-    context:
-      conversationState.context,
-    message: {
-      id: message.id,
-      channelId,
-      role: "assistant",
-      content: reply,
-      agentId,
-      createdAt:
-        message.createdAt.toISOString(),
-    },
-  });
+console.log(
+  "[TURN RUNNER] Conversation state found",
+  {
+    runId: approval.runId,
+    channelId:
+      conversationState.context.channelId,
+    agentId:
+      conversationState.context.agentId,
+  },
+);
 
-  await deps.audit.record(
-    "channel.agent_replied",
+const runtime =
+  deps.createRuntime(
     conversationState.context.actorId,
-    {
-      channelId,
-      agentId,
-      runId: result.runId,
-    },
   );
 
+const conversation =
+  new AgentConversation(
+    deps.llm,
+    deps.tools,
+    runtime,
+    deps.events,
+  );
+
+const result =
+  await conversation.resume(
+    conversationState,
+    decision,
+  );
+
+console.log(
+  "[TURN RUNNER] Resumed conversation result",
+  {
+    status: result.status,
+    runId: result.runId,
+    content:
+      result.content ?? null,
+    error:
+      result.error ?? null,
+  },
+);
+
+if (result.status === "failed") {
   deps.conversationStore.delete(
     result.runId,
   );
 
-  console.log(
-    "[TURN RUNNER] Approval flow completed",
+  await deps.audit.record(
+    "channel.turn_failed",
+    conversationState.context.actorId,
     {
-      approvalId,
+      channelId:
+        conversationState.context.channelId,
+      agentId:
+        conversationState.context.agentId,
       runId: result.runId,
-      channelId,
-      agentId,
+      approvalId,
+      error:
+        result.error ??
+        "Conversation failed after approval decision.",
+    },
+  );
+
+  // A user rejection is an expected outcome,
+  // not a server error.
+  if (decision === "rejected") {
+    return result;
+  }
+
+  throw new Error(
+    result.error ??
+      "Conversation failed after approval decision.",
+  );
+}
+
+if (result.status === "waiting") {
+  if (!result.state) {
+    throw new Error(
+      "Conversation is waiting again but returned no state.",
+    );
+  }
+
+  deps.conversationStore.set(
+    result.runId,
+    result.state,
+  );
+
+  await deps.audit.record(
+    "channel.agent_waiting",
+    conversationState.context.actorId,
+    {
+      channelId:
+        conversationState.context.channelId,
+      agentId:
+        conversationState.context.agentId,
+      runId: result.runId,
+      pendingApprovalId:
+        result.pendingApprovalId ??
+        null,
     },
   );
 
   return result;
 }
 
+if (result.status !== "completed") {
+  throw new Error(
+    `Unexpected conversation status: ${result.status}`,
+  );
+}
 
+const reply =
+  result.content?.trim();
+
+if (!reply) {
+  throw new Error(
+    `Agent "${conversationState.context.agentId}" completed without a response.`,
+  );
+}
+
+const channelId =
+  conversationState.context.channelId;
+
+if (!channelId) {
+  throw new Error(
+    "Conversation context is missing channelId.",
+  );
+}
+
+const agentId =
+  conversationState.context.agentId;
+
+const message =
+  await deps.channels.appendMessage({
+    channelId,
+    role: "assistant",
+    content: reply,
+    agentId,
+  });
+
+console.log(
+  "[TURN RUNNER] Resumed assistant message saved",
+  {
+    id: message.id,
+    channelId,
+    agentId,
+  },
+);
+
+await deps.events?.emit({
+  type: "message.created",
+  context:
+    conversationState.context,
+  message: {
+    id: message.id,
+    channelId,
+    role: "assistant",
+    content: reply,
+    agentId,
+    createdAt:
+      message.createdAt.toISOString(),
+  },
+});
+
+await deps.audit.record(
+  "channel.agent_replied",
+  conversationState.context.actorId,
+  {
+    channelId,
+    agentId,
+    runId: result.runId,
+  },
+);
+
+deps.conversationStore.delete(
+  result.runId,
+);
+
+console.log(
+  "[TURN RUNNER] Approval flow completed",
+  {
+    approvalId,
+    runId: result.runId,
+    channelId,
+    agentId,
+  },
+);
+
+return result;
+
+}
+
+async function resumeUserInteraction(
+runId: string,
+answer: string,
+) {
+console.log(
+"[TURN RUNNER] Resuming user interaction",
+{
+runId,
+answer,
+},
+);
+
+const conversationState =
+  deps.conversationStore.get(runId);
+
+if (!conversationState) {
+  throw new Error(
+    `Conversation state not found for run "${runId}".`,
+  );
+}
+
+const pendingInteraction =
+  conversationState.runtimeState
+    .pendingInteraction;
+
+if (!pendingInteraction) {
+  throw new Error(
+    `Conversation "${runId}" has no pending user interaction.`,
+  );
+}
+
+console.log(
+  "[TURN RUNNER] User interaction state found",
+  {
+    runId,
+    channelId:
+      conversationState.context.channelId,
+    agentId:
+      conversationState.context.agentId,
+    toolCallId:
+      pendingInteraction.toolCallId,
+    type:
+      pendingInteraction.interaction.type,
+  },
+);
+
+const runtime =
+  deps.createRuntime(
+    conversationState.context.actorId,
+  );
+
+const conversation =
+  new AgentConversation(
+    deps.llm,
+    deps.tools,
+    runtime,
+    deps.events,
+  );
+
+const result =
+  await conversation.resumeUserInteraction(
+    conversationState,
+    answer,
+  );
+
+console.log(
+  "[TURN RUNNER] Resumed user interaction result",
+  {
+    status: result.status,
+    runId: result.runId,
+    content:
+      result.content ?? null,
+    error:
+      result.error ?? null,
+  },
+);
+
+if (result.status === "failed") {
+  deps.conversationStore.delete(
+    result.runId,
+  );
+
+  await deps.audit.record(
+    "channel.turn_failed",
+    conversationState.context.actorId,
+    {
+      channelId:
+        conversationState.context.channelId,
+      agentId:
+        conversationState.context.agentId,
+      runId: result.runId,
+      error:
+        result.error ??
+        "Conversation failed after user interaction.",
+    },
+  );
+
+  throw new Error(
+    result.error ??
+      "Conversation failed after user interaction.",
+  );
+}
+
+if (result.status === "waiting") {
+  if (!result.state) {
+    throw new Error(
+      "Conversation is waiting again but returned no state.",
+    );
+  }
+
+  deps.conversationStore.set(
+    result.runId,
+    result.state,
+  );
+
+  await deps.audit.record(
+    "channel.agent_waiting",
+    conversationState.context.actorId,
+    {
+      channelId:
+        conversationState.context.channelId,
+      agentId:
+        conversationState.context.agentId,
+      runId: result.runId,
+      pendingApprovalId:
+        result.pendingApprovalId ??
+        null,
+    },
+  );
+
+  return result;
+}
+
+if (result.status !== "completed") {
+  throw new Error(
+    `Unexpected conversation status: ${result.status}`,
+  );
+}
+
+const reply =
+  result.content?.trim();
+
+if (!reply) {
+  throw new Error(
+    `Agent "${conversationState.context.agentId}" completed without a response.`,
+  );
+}
+
+const channelId =
+  conversationState.context.channelId;
+
+if (!channelId) {
+  throw new Error(
+    "Conversation context is missing channelId.",
+  );
+}
+
+const agentId =
+  conversationState.context.agentId;
+
+const message =
+  await deps.channels.appendMessage({
+    channelId,
+    role: "assistant",
+    content: reply,
+    agentId,
+  });
+
+console.log(
+  "[TURN RUNNER] Resumed assistant message saved",
+  {
+    id: message.id,
+    channelId,
+    agentId,
+  },
+);
+
+await deps.events?.emit({
+  type: "message.created",
+  context:
+    conversationState.context,
+  message: {
+    id: message.id,
+    channelId,
+    role: "assistant",
+    content: reply,
+    agentId,
+    createdAt:
+      message.createdAt.toISOString(),
+  },
+});
+
+await deps.audit.record(
+  "channel.agent_replied",
+  conversationState.context.actorId,
+  {
+    channelId,
+    agentId,
+    runId: result.runId,
+  },
+);
+
+deps.conversationStore.delete(
+  result.runId,
+);
+
+console.log(
+  "[TURN RUNNER] User interaction flow completed",
+  {
+    runId: result.runId,
+    channelId,
+    agentId,
+  },
+);
+
+return result;
+
+}
 
 async function loop() {
 console.log(
@@ -987,6 +1212,9 @@ stop() {
 
   stopped = true;
 },
+
 resumeApproval,
+resumeUserInteraction,
+
 };
 }

@@ -6,6 +6,10 @@ import {
   type ToolCall,
 } from "../tools/tools";
 import type { GatewayExecutor } from "../../gateway/executor";
+import {
+  isUserInteractionToolCall,
+  parseUserInteraction,
+} from "../llm/user-interaction";
 import { RuntimeHistory } from "./history";
 import type { RuntimeState } from "./state";
 
@@ -84,10 +88,10 @@ export class RuntimeLoop {
                 };
 
           history.addToolResult(
-  execution.toolCall.id,
-  execution.toolCall.toolId,
-  output,
-);
+            execution.toolCall.id,
+            execution.toolCall.toolId,
+            output,
+          );
         }
       }
 
@@ -128,6 +132,8 @@ export class RuntimeLoop {
           state.status = "completed";
           state.result =
             response.content;
+          state.messages =
+            history.getMessages();
 
           await this.dependencies.events?.emit({
             type: "agent.completed",
@@ -146,6 +152,82 @@ export class RuntimeLoop {
           response.calls,
         );
 
+        /*
+         * User interaction is a special runtime
+         * tool. It must never go through the
+         * Gateway because it does not perform
+         * an external action.
+         */
+        const interactionCalls =
+          response.calls.filter(
+            isUserInteractionToolCall,
+          );
+
+        /*
+         * We only support one pending user
+         * interaction at a time.
+         */
+        if (
+          interactionCalls.length >
+          1
+        ) {
+          return this.fail(
+            state,
+            "The model requested multiple user interactions in the same turn.",
+          );
+        }
+
+        if (
+          interactionCalls.length ===
+          1
+        ) {
+          /*
+           * A user interaction pauses the whole
+           * run. Therefore it must be the only
+           * tool call returned by the model.
+           */
+          if (
+            response.calls.length !==
+            1
+          ) {
+            return this.fail(
+              state,
+              "A user interaction must be the only tool call in an LLM response.",
+            );
+          }
+
+          const call =
+            interactionCalls[0];
+
+          const interaction =
+            parseUserInteraction(
+              call,
+            );
+
+          state.pendingInteraction = {
+            toolCallId:
+              call.id,
+            interaction,
+          };
+
+          state.status = "waiting";
+          state.messages =
+            history.getMessages();
+
+          await this.dependencies.events?.emit({
+            type:
+              "user_interaction.required",
+            context:
+              state.context,
+            interaction,
+          });
+
+          return state;
+        }
+
+        /*
+         * Normal tool execution.
+         */
         for (const call of response.calls) {
           const execution =
             await this.executeTool(
@@ -161,6 +243,9 @@ export class RuntimeLoop {
             execution.status ===
             "approval_required"
           ) {
+            state.messages =
+              history.getMessages();
+
             return state;
           }
 
@@ -174,13 +259,14 @@ export class RuntimeLoop {
             "denied"
           ) {
             history.addToolResult(
-  call.id,
-  call.toolId,
-  {
-    error:
-      "Tool execution returned no result.",
-  },
-);
+              call.id,
+              call.toolId,
+              {
+                error:
+                  execution.reason ??
+                  "Tool execution denied by Gateway.",
+              },
+            );
 
             continue;
           }
@@ -200,12 +286,15 @@ export class RuntimeLoop {
                   };
 
             history.addToolResult(
-  execution.toolCall.id,
-  execution.toolCall.toolId,
-  output,
-);
+              execution.toolCall.id,
+              execution.toolCall.toolId,
+              output,
+            );
           }
         }
+
+        state.messages =
+          history.getMessages();
       }
 
       return this.fail(
@@ -239,6 +328,23 @@ export class RuntimeLoop {
     };
     reason?: string;
   }> {
+    /*
+     * Safety guard:
+     *
+     * user_interaction must always be handled
+     * directly by RuntimeLoop and must never
+     * reach the Gateway.
+     */
+    if (
+      isUserInteractionToolCall(
+        call,
+      )
+    ) {
+      throw new Error(
+        "The user_interaction tool cannot be executed through Gateway.",
+      );
+    }
+
     await this.dependencies.events?.emit({
       type: "tool.started",
       context: state.context,
@@ -401,6 +507,10 @@ export class RuntimeLoop {
   ): Promise<RuntimeState> {
     state.status = "failed";
     state.error = error;
+    state.messages =
+      new RuntimeHistory(
+        state.messages,
+      ).getMessages();
 
     await this.dependencies.events?.emit({
       type: "agent.failed",

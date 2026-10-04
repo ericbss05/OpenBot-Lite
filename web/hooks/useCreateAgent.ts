@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * 📁 Emplacement : app/agents/new/_hooks/useCreateAgent.ts
+ * 📁 Emplacement : web/hooks/useCreateAgent.ts
  * 📄 Spécifique à la page /agents/new — ne pas importer depuis ailleurs. (État du formulaire + soumission + redirection)
  */
 
@@ -41,14 +41,16 @@ export function useCreateAgent() {
     setLoading(true);
 
     const payload = {
-      name: values.name.trim(),
-      title: values.title.trim() || undefined,
-      roleDescription: values.roleDescription.trim() || undefined,
-      endpoint: values.endpoint.trim() || undefined,
-      visibility: "private" as const,
-      avatarPalette: avatar.palette,
-      avatarReversed: avatar.reversed,
-    };
+  name: values.name.trim(),
+  title: values.title.trim() || undefined,
+  roleDescription: values.roleDescription.trim() || undefined,
+  endpoint: values.endpoint.trim() || undefined,
+  provider: "openai" as const,
+  model: "gpt-6-luna" as const,
+  visibility: "private" as const,
+  avatarPalette: avatar.palette,
+  avatarReversed: avatar.reversed,
+};
 
     try {
       await createAgent(payload);

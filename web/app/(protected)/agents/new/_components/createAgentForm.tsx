@@ -26,9 +26,18 @@ type CreateAgentFormProps = {
   state: CreateAgentState;
 };
 
-export function CreateAgentForm({ state }: CreateAgentFormProps) {
-  const { values, setField, avatar, loading, error, canSubmit, handleSubmit } =
-    state;
+export function CreateAgentForm({
+  state,
+}: CreateAgentFormProps) {
+  const {
+    values,
+    setField,
+    avatar,
+    loading,
+    error,
+    canSubmit,
+    handleSubmit,
+  } = state;
 
   return (
     <form onSubmit={handleSubmit}>
@@ -43,6 +52,7 @@ export function CreateAgentForm({ state }: CreateAgentFormProps) {
             onShuffle={avatar.shuffle}
             disabled={loading}
           />
+
           <AgentIdentityFields
             values={values}
             onChange={setField}
@@ -59,6 +69,35 @@ export function CreateAgentForm({ state }: CreateAgentFormProps) {
             onChange={setField}
             disabled={loading}
           />
+        </FormSection>
+
+        <FormSection
+          title="Model"
+          description="Choose the model used by your agent."
+        >
+          <div className="space-y-2">
+            <label
+              htmlFor="model"
+              className="text-sm font-medium"
+            >
+              Model
+            </label>
+
+            <select
+              id="model"
+              value="gpt-6-luna"
+              disabled
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <option value="gpt-6-luna">
+                OpenAI — GPT-6 Luna
+              </option>
+            </select>
+
+            <p className="text-xs text-muted-foreground">
+              More models will be available later.
+            </p>
+          </div>
         </FormSection>
 
         <FormSection
@@ -81,7 +120,9 @@ export function CreateAgentForm({ state }: CreateAgentFormProps) {
         </FormSection>
 
         <div className="space-y-4 bg-muted/40 px-6 py-4">
-          {error && <FormError message={error} />}
+          {error && (
+            <FormError message={error} />
+          )}
 
           <FormActions
             cancelHref="/agents"

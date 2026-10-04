@@ -5,6 +5,7 @@ export type Agent = {
   name: string;
   title: string | null;
   roleDescription: string | null;
+  provider: string;
   model: string;
   visibility: "public" | "private";
   endpoint: string | null;
@@ -18,6 +19,8 @@ export type CreateAgentInput = {
   name: string;
   title?: string;
   roleDescription?: string;
+  provider: "openai";
+  model: "gpt-6-luna";
   endpoint?: string;
   visibility: "private";
   avatarPalette?: number;
@@ -28,6 +31,7 @@ export type UpdateAgentInput = Partial<{
   name: string;
   title: string;
   roleDescription: string;
+  provider: string;
   model: string;
   visibility: "private";
   endpoint: string;

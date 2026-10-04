@@ -1,12 +1,12 @@
 "use client";
 
-import {
-  useEffect,
-  useState,
-} from "react";
+import { useEffect, useState } from "react";
 
 import { API_URL } from "@/lib/api/client";
-import type { ChannelMessage } from "@/lib/api/channels";
+import type {
+  ChannelMessage,
+  UserInteraction,
+} from "@/lib/api/channels";
 import type { Approval } from "@/lib/api/approvals";
 
 export type ChannelEvent = {
@@ -15,16 +15,12 @@ export type ChannelEvent = {
 };
 
 type UseChannelEventsOptions = {
-  onMessageCreated?: (
-    message: ChannelMessage,
-  ) => void;
-
-  onApprovalRequired?: (
-    approval: Approval,
-  ) => void;
-
-  onApprovalResolved?: (
-    approvalId: string,
+  onMessageCreated?: (message: ChannelMessage) => void;
+  onApprovalRequired?: (approval: Approval) => void;
+  onApprovalResolved?: (approvalId: string) => void;
+  onUserInteractionRequired?: (
+    interaction: UserInteraction,
+    runId: string,
   ) => void;
 };
 
@@ -41,6 +37,7 @@ const RUNTIME_EVENTS = [
   "approval.required",
   "approval.approved",
   "approval.rejected",
+  "user_interaction.required",
   "agent.started",
   "agent.completed",
   "agent.failed",
@@ -53,46 +50,30 @@ export function useChannelEvents(
   channelId: string,
   options?: UseChannelEventsOptions,
 ) {
-  const [connected, setConnected] =
-    useState(false);
+  const [connected, setConnected] = useState(false);
+  const [events, setEvents] = useState<ChannelEvent[]>([]);
+  const [runtimeStatus, setRuntimeStatus] = useState<string | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
 
-  const [events, setEvents] =
-    useState<ChannelEvent[]>([]);
-
-  const [runtimeStatus, setRuntimeStatus] =
-    useState<string | null>(null);
-
-  const [error, setError] =
-    useState<string | null>(null);
-
-  const onMessageCreated =
-    options?.onMessageCreated;
-
-  const onApprovalRequired =
-    options?.onApprovalRequired;
-
-  const onApprovalResolved =
-    options?.onApprovalResolved;
+  const onMessageCreated = options?.onMessageCreated;
+  const onApprovalRequired = options?.onApprovalRequired;
+  const onApprovalResolved = options?.onApprovalResolved;
+  const onUserInteractionRequired =
+    options?.onUserInteractionRequired;
 
   useEffect(() => {
-    if (!channelId) {
-      return;
-    }
+    if (!channelId) return;
 
     const url =
       `${API_URL}/api/channels/${channelId}/events`;
 
-    console.log(
-      "[SSE] Opening:",
-      url,
-    );
+    console.log("[SSE] Opening:", url);
 
-    const source = new EventSource(
-      url,
-      {
-        withCredentials: true,
-      },
-    );
+    const source = new EventSource(url, {
+      withCredentials: true,
+    });
 
     const handleConnected = (
       event: MessageEvent,
@@ -119,8 +100,7 @@ export function useChannelEvents(
       event: MessageEvent,
     ) => {
       try {
-        const data =
-          JSON.parse(event.data);
+        const data = JSON.parse(event.data);
 
         const channelEvent: ChannelEvent = {
           type: event.type,
@@ -160,8 +140,7 @@ export function useChannelEvents(
             const approval: Approval = {
               id: data.approvalId,
               runId:
-                data.context?.runId ??
-                "",
+                data.context?.runId ?? "",
               toolCallId:
                 data.toolCallId,
               toolId:
@@ -169,8 +148,7 @@ export function useChannelEvents(
               arguments:
                 data.arguments ?? {},
               actorId:
-                data.context?.actorId ??
-                "",
+                data.context?.actorId ?? "",
               status: "pending",
             };
 
@@ -184,7 +162,6 @@ export function useChannelEvents(
             );
 
             setRuntimeStatus(null);
-
             break;
           }
 
@@ -200,7 +177,37 @@ export function useChannelEvents(
             }
 
             setRuntimeStatus(null);
+            break;
+          }
 
+          case "user_interaction.required": {
+            const interaction =
+              data.interaction as
+                | UserInteraction
+                | undefined;
+
+            const runId =
+              data.context?.runId;
+
+            if (
+              interaction &&
+              runId
+            ) {
+              console.log(
+                "[SSE] User interaction required:",
+                {
+                  interaction,
+                  runId,
+                },
+              );
+
+              onUserInteractionRequired?.(
+                interaction,
+                runId,
+              );
+            }
+
+            setRuntimeStatus(null);
             break;
           }
 
@@ -269,7 +276,9 @@ export function useChannelEvents(
       handlePing,
     );
 
-    for (const eventType of RUNTIME_EVENTS) {
+    for (
+      const eventType of RUNTIME_EVENTS
+    ) {
       source.addEventListener(
         eventType,
         handleRuntimeEvent,
@@ -298,6 +307,7 @@ export function useChannelEvents(
     onMessageCreated,
     onApprovalRequired,
     onApprovalResolved,
+    onUserInteractionRequired,
   ]);
 
   return {
