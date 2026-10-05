@@ -46,10 +46,15 @@ import {
   eventHub,
 } from "./agent/events/hub";
 import { createConversationStore } from "./agent/conversation-store";
+import {
+  createPostgresInteractionStore,
+} from "./agent/interactions/postgres-store";
 
 const conversationStore =
   createConversationStore();
 
+  const interactionStore =
+  createPostgresInteractionStore(db);
 const config = loadConfig();
 
 // --------------------------------------------------
@@ -190,6 +195,7 @@ const turnRunner =
     tools,
     conversationStore,
     events: eventHub,
+    interactions: interactionStore,
 
     getAgent: (agentId) =>
       runtimeAgents.get(agentId),

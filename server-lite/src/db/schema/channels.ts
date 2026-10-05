@@ -9,6 +9,8 @@ import {
 
 import { user } from "./auth";
 import { agentProfiles } from "./agents";
+import { interactions } from "./interactions";
+import { approvals } from "./approvals";
 
 // ============================================================
 // Channels
@@ -117,6 +119,20 @@ export const channelMessages = pgTable(
       },
     ),
 
+    interactionId: text("interaction_id").references(
+      () => interactions.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+
+    approvalId: text("approval_id").references(
+      () => approvals.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+
     content: text("content").notNull(),
 
     createdAt: timestamp("created_at")
@@ -131,6 +147,14 @@ export const channelMessages = pgTable(
 
     index("channel_messages_agent_idx").on(
       table.agentId,
+    ),
+
+    index("channel_messages_interaction_idx").on(
+      table.interactionId,
+    ),
+
+    index("channel_messages_approval_idx").on(
+      table.approvalId,
     ),
   ],
 );

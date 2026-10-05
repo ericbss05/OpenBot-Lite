@@ -1,6 +1,6 @@
 import type {
   LLMToolCall,
-} from "./provider";
+} from "../llm/provider";
 
 import type {
   ToolDefinition,

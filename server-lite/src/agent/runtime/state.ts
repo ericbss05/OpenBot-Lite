@@ -9,7 +9,7 @@ import type {
 
 import type {
   PendingUserInteraction,
-} from "../llm/user-interaction";
+} from "../interactions/user-interaction";
 
 import type {
   ToolResult,

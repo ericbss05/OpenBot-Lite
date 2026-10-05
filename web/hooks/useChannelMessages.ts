@@ -1,10 +1,6 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useState,
-} from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import {
   getChannelMessages,
@@ -12,27 +8,20 @@ import {
   type ChannelMessage,
 } from "@/lib/api/channels";
 
-export function useChannelMessages(
-  channelId: string,
-) {
-  const [messages, setMessages] =
-    useState<ChannelMessage[]>([]);
+const OPTIMISTIC_PREFIX = "optimistic-";
 
-  const [loading, setLoading] =
-    useState(true);
+export function useChannelMessages(channelId: string) {
+  const [messages, setMessages] = useState<ChannelMessage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const [error, setError] =
-    useState<string | null>(null);
-
+  /* Rechargement complet (affiche l'état "loading"). */
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
 
     try {
-      const data =
-        await getChannelMessages(
-          channelId,
-        );
+      const data = await getChannelMessages(channelId);
 
       setMessages(data);
     } catch (error) {
@@ -46,15 +35,38 @@ export function useChannelMessages(
     }
   }, [channelId]);
 
+  /*
+   * Rechargement silencieux : pas de "loading", et les messages
+   * optimistes pas encore persistés sont conservés.
+   */
+  const refresh = useCallback(async () => {
+    try {
+      const data = await getChannelMessages(channelId);
+
+      setMessages((current) => {
+        const pendingOptimistic = current.filter(
+          (message) =>
+            message.id.startsWith(OPTIMISTIC_PREFIX) &&
+            !data.some(
+              (persisted) =>
+                persisted.role === message.role &&
+                persisted.content === message.content,
+            ),
+        );
+
+        return [...data, ...pendingOptimistic];
+      });
+    } catch {
+      // Silencieux : l'état actuel reste affiché.
+    }
+  }, [channelId]);
+
   useEffect(() => {
     let cancelled = false;
 
     async function initialLoad() {
       try {
-        const data =
-          await getChannelMessages(
-            channelId,
-          );
+        const data = await getChannelMessages(channelId);
 
         if (cancelled) return;
 
@@ -82,27 +94,24 @@ export function useChannelMessages(
     };
   }, [channelId]);
 
-  const appendMessage = useCallback(
-    (message: ChannelMessage) => {
-      setMessages((current) => {
-        const alreadyExists =
-          current.some(
-            (item) =>
-              item.id === message.id,
-          );
+  /*
+   * Ajoute un message, ou met à jour celui qui existe déjà (même id).
+   * Important : un message peut arriver une première fois sans son
+   * interaction / approval, puis une seconde fois avec.
+   */
+  const appendMessage = useCallback((message: ChannelMessage) => {
+    setMessages((current) => {
+      const exists = current.some((item) => item.id === message.id);
 
-        if (alreadyExists) {
-          return current;
-        }
+      if (!exists) {
+        return [...current, message];
+      }
 
-        return [
-          ...current,
-          message,
-        ];
-      });
-    },
-    [],
-  );
+      return current.map((item) =>
+        item.id === message.id ? { ...item, ...message } : item,
+      );
+    });
+  }, []);
 
   const send = useCallback(
     async (content: string) => {
@@ -113,32 +122,28 @@ export function useChannelMessages(
       }
 
       const optimisticMessage: ChannelMessage = {
-        id: `optimistic-${crypto.randomUUID()}`,
+        id: `${OPTIMISTIC_PREFIX}${crypto.randomUUID()}`,
         channelId,
         role: "user",
         content: value,
         agentId: null,
-        createdAt:
-          new Date().toISOString(),
+        interactionId: null,
+        approvalId: null,
+        interaction: null,
+        approval: null,
+        createdAt: new Date().toISOString(),
       };
 
-      appendMessage(
-        optimisticMessage,
-      );
+      appendMessage(optimisticMessage);
 
       setError(null);
 
       try {
-        await sendChannelMessage(
-          channelId,
-          value,
-        );
+        await sendChannelMessage(channelId, value);
       } catch (error) {
         setMessages((current) =>
           current.filter(
-            (message) =>
-              message.id !==
-              optimisticMessage.id,
+            (message) => message.id !== optimisticMessage.id,
           ),
         );
 
@@ -160,6 +165,7 @@ export function useChannelMessages(
     error,
     send,
     appendMessage,
+    refresh,
     reload: load,
   };
 }

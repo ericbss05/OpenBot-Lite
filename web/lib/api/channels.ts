@@ -25,12 +25,62 @@ export type ChannelMessageRole =
 | "assistant"
 | "system";
 
+export type ChannelMessageInteraction = {
+id: string;
+runId: string;
+toolCallId: string;
+type:
+| "clarification"
+| "ask_user";
+question: string;
+options:
+| Array<{
+label: string;
+value: string;
+}>
+| null;
+status:
+| "pending"
+| "answered"
+| "cancelled";
+answer: string | null;
+createdAt: string;
+answeredAt: string | null;
+};
+
+export type ChannelMessageApproval = {
+id: string;
+runId: string;
+toolCallId: string;
+toolId: string;
+arguments: Record<string, unknown>;
+actorId: string;
+status:
+| "pending"
+| "approved"
+| "rejected";
+createdAt: string;
+decidedAt: string | null;
+};
+
 export type ChannelMessage = {
 id: string;
 channelId: string;
 role: ChannelMessageRole;
 content: string;
 agentId: string | null;
+
+interactionId: string | null;
+approvalId: string | null;
+
+interaction:
+| ChannelMessageInteraction
+| null;
+
+approval:
+| ChannelMessageApproval
+| null;
+
 createdAt: string;
 };
 
@@ -67,9 +117,9 @@ options?: UserInteractionOption[];
 };
 
 export async function getChannels(): Promise<Channel[]> {
-return apiRequest<Channel[]>(
-"/api/channels",
-);
+ return apiRequest<Channel[]>(
+ "/api/channels",
+ );
 }
 
 export async function getChannel(

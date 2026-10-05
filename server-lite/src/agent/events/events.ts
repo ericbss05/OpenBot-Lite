@@ -1,6 +1,6 @@
 import type {
   UserInteraction,
-} from "../llm/user-interaction";
+} from "../interactions/user-interaction";
 
 export interface RunContext {
   runId: string;

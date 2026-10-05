@@ -41,6 +41,8 @@ export function createChannelService(
       channelId: string;
       role: "user" | "assistant" | "system";
       content: string;
+      interactionId?: string | null;
+      approvalId?: string | null;
       agentId?: string | null;
     }): Promise<{
       id: string;

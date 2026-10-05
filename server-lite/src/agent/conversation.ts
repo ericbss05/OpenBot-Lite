@@ -11,7 +11,7 @@ import type {
 import {
   isUserInteractionToolCall,
   parseUserInteraction,
-} from "./llm/user-interaction";
+} from "./interactions/user-interaction";
 
 import type {
   ToolRegistry,

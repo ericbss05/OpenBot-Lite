@@ -9,7 +9,7 @@ import type { GatewayExecutor } from "../../gateway/executor";
 import {
   isUserInteractionToolCall,
   parseUserInteraction,
-} from "../llm/user-interaction";
+} from "../interactions/user-interaction";
 import { RuntimeHistory } from "./history";
 import type { RuntimeState } from "./state";
 

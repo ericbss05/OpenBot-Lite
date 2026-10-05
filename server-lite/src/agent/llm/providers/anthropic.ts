@@ -20,7 +20,7 @@ import type {
 
 import {
   USER_INTERACTION_TOOL_DEFINITION,
-} from "../user-interaction";
+} from "../../interactions/user-interaction";
 
 export class AnthropicProvider
   implements LLMProvider
