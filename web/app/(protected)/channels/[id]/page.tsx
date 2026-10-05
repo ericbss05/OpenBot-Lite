@@ -9,11 +9,15 @@ import {
 } from "react";
 
 import { useParams } from "next/navigation";
+
 import {
+  Check,
   Loader2,
   MessageCircleQuestion,
   SendHorizontal,
   ShieldAlert,
+  ShieldCheck,
+  ShieldX,
 } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -35,32 +39,77 @@ import {
   type UserInteraction,
 } from "@/lib/api/channels";
 
+/* -------------------------------------------------------------------------- */
+/*  Types                                                                     */
+/* -------------------------------------------------------------------------- */
+
 type MessageApproval = NonNullable<ChannelMessage["approval"]>;
 type MessageInteraction = NonNullable<ChannelMessage["interaction"]>;
 
 /*
- * Champs réellement utilisés par la carte. Les approvals temps réel
- * (hook) n'ont pas createdAt / decidedAt comme celles de la base.
+ * Champs réellement utilisés par la carte d'approbation. Les approvals
+ * temps réel (hook) n'ont pas createdAt / decidedAt comme celles de la base.
  */
 type ApprovalView = Pick<MessageApproval, "id" | "toolId" | "arguments">;
+
+/* "resolved" = traitée (ex. depuis un autre onglet), décision inconnue. */
+type ApprovalStatus = "pending" | "approved" | "rejected" | "resolved";
+
+type InteractionStatus = "pending" | "answered" | "cancelled";
 
 type ActiveInteraction = {
   interaction: UserInteraction;
   runId: string;
 };
 
+type ApprovalDecision = {
+  status: ApprovalStatus;
+  approval: ApprovalView;
+};
+
+type InteractionInfo = {
+  ownerId: string;
+  status: InteractionStatus;
+  answer: string | null;
+};
+
 /* -------------------------------------------------------------------------- */
 /*  Helpers                                                                   */
 /* -------------------------------------------------------------------------- */
 
-function toUserInteraction(
-  interaction: MessageInteraction,
-): UserInteraction {
+function toUserInteraction(interaction: MessageInteraction): UserInteraction {
   return {
     type: interaction.type,
     question: interaction.question,
     options: interaction.options ?? undefined,
   };
+}
+
+function toInteractionStatus(status: string): InteractionStatus {
+  if (status === "answered") return "answered";
+  if (status === "cancelled") return "cancelled";
+
+  return "pending";
+}
+
+/* Lit `answer` (colonne interactions.answer) sans dépendre du type API. */
+function getInteractionAnswer(
+  interaction: MessageInteraction,
+): string | null {
+  const value = (
+    interaction as MessageInteraction & { answer?: string | null }
+  ).answer;
+
+  return value ?? null;
+}
+
+/*
+ * Un même run peut poser plusieurs questions : on identifie une
+ * interaction par runId + question, ce qui reste stable entre la version
+ * temps réel et la version relue depuis la base.
+ */
+function interactionKey(runId: string, question: string): string {
+  return `${runId}::${question}`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -69,29 +118,49 @@ function toUserInteraction(
 
 function ApprovalCard({
   approval,
+  status,
   processing,
   disabled,
   onApprove,
   onReject,
 }: {
   approval: ApprovalView;
+  status: ApprovalStatus;
   processing: boolean;
   disabled: boolean;
   onApprove: () => void;
   onReject: () => void;
 }) {
+  const pending = status === "pending";
+
+  const title = {
+    pending: "Approbation requise",
+    approved: "Action autorisée",
+    rejected: "Action refusée",
+    resolved: "Action traitée",
+  }[status];
+
+  const icon = {
+    pending: <ShieldAlert className="size-4 text-amber-500" />,
+    approved: <ShieldCheck className="size-4 text-green-500" />,
+    rejected: <ShieldX className="size-4 text-destructive" />,
+    resolved: <ShieldCheck className="size-4 text-muted-foreground" />,
+  }[status];
+
   return (
     <Card className="flex max-w-[85%] flex-col gap-4 p-4 shadow-none">
       <div className="flex items-start gap-3">
-        <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-500" />
+        <div className="mt-0.5 shrink-0">{icon}</div>
 
         <div className="min-w-0">
-          <p className="text-sm font-medium">Approbation requise</p>
+          <p className="text-sm font-medium">{title}</p>
 
-          <p className="mt-1 text-sm text-muted-foreground">
-            L&apos;agent souhaite exécuter une action nécessitant votre
-            autorisation.
-          </p>
+          {pending && (
+            <p className="mt-1 text-sm text-muted-foreground">
+              L&apos;agent souhaite exécuter une action nécessitant votre
+              autorisation.
+            </p>
+          )}
         </div>
       </div>
 
@@ -103,44 +172,46 @@ function ApprovalCard({
         </pre>
       </div>
 
-      <div className="flex gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={disabled}
-          onClick={onReject}
-        >
-          {processing && <Loader2 className="animate-spin" />}
-          Refuser
-        </Button>
+      {pending && (
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={disabled}
+            onClick={onReject}
+          >
+            {processing && <Loader2 className="animate-spin" />}
+            Refuser
+          </Button>
 
-        <Button
-          type="button"
-          size="sm"
-          disabled={disabled}
-          onClick={onApprove}
-        >
-          {processing && <Loader2 className="animate-spin" />}
-          Autoriser
-        </Button>
-      </div>
+          <Button
+            type="button"
+            size="sm"
+            disabled={disabled}
+            onClick={onApprove}
+          >
+            {processing && <Loader2 className="animate-spin" />}
+            Autoriser
+          </Button>
+        </div>
+      )}
     </Card>
   );
 }
 
 function InteractionCard({
   interaction,
-  answered,
-  selectedValue,
+  status,
+  answer,
   processing,
   error,
   onAnswer,
 }: {
   interaction: UserInteraction;
-  /** Une fois répondue, la carte reste visible mais n'est plus cliquable. */
-  answered: boolean;
-  selectedValue?: string;
+  status: InteractionStatus;
+  /** Réponse de l'utilisateur (valeur brute), si connue. */
+  answer: string | null;
   processing: boolean;
   error: string | null;
   onAnswer: (answer: string) => void;
@@ -154,6 +225,13 @@ function InteractionCard({
     interaction.type === "clarification"
       ? "Précision requise"
       : "Votre choix";
+
+  /* Pour les choix, on affiche le label plutôt que la valeur. */
+  const answerLabel =
+    answer !== null
+      ? (interaction.options?.find((option) => option.value === answer)
+          ?.label ?? answer)
+      : null;
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -179,52 +257,66 @@ function InteractionCard({
         </div>
       </div>
 
-      {hasOptions ? (
-        <div className="flex flex-wrap gap-2">
-          {interaction.options!.map((option) => {
-            const selected = answered && option.value === selectedValue;
-
-            return (
+      {status === "pending" &&
+        (hasOptions ? (
+          <div className="flex flex-wrap gap-2">
+            {interaction.options!.map((option) => (
               <Button
                 key={option.value}
                 type="button"
                 size="sm"
-                variant={selected ? "default" : "outline"}
-                disabled={processing || answered}
+                variant="outline"
+                disabled={processing}
                 onClick={() => onAnswer(option.value)}
-                className={cn(selected && "disabled:opacity-100")}
               >
                 {option.label}
               </Button>
-            );
-          })}
-        </div>
-      ) : answered ? (
-        selectedValue !== undefined && (
-          <p className="text-sm text-muted-foreground">
-            Réponse : {selectedValue}
-          </p>
-        )
-      ) : (
-        <form className="flex gap-2" onSubmit={handleSubmit}>
-          <Input
-            name="answer"
-            type="text"
-            autoComplete="off"
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            disabled={processing}
-            placeholder="Votre réponse..."
-          />
+            ))}
+          </div>
+        ) : (
+          <form className="flex gap-2" onSubmit={handleSubmit}>
+            <Input
+              name="answer"
+              type="text"
+              autoComplete="off"
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              disabled={processing}
+              placeholder="Votre réponse..."
+            />
 
-          <Button type="submit" disabled={processing || !text.trim()}>
-            {processing && <Loader2 className="animate-spin" />}
-            Répondre
-          </Button>
-        </form>
+            <Button type="submit" disabled={processing || !text.trim()}>
+              {processing && <Loader2 className="animate-spin" />}
+              Répondre
+            </Button>
+          </form>
+        ))}
+
+      {status === "answered" && (
+        <div className="flex flex-wrap items-center gap-2 border-t pt-3 text-sm">
+          <Check className="size-4 text-green-500" />
+
+          <span className="text-muted-foreground">Votre réponse</span>
+
+          {answerLabel !== null ? (
+            <span className="rounded-md bg-primary px-2.5 py-1 text-primary-foreground">
+              {answerLabel}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">envoyée</span>
+          )}
+        </div>
       )}
 
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      {status === "cancelled" && (
+        <p className="border-t pt-3 text-sm text-muted-foreground">
+          Question annulée.
+        </p>
+      )}
+
+      {error && status === "pending" && (
+        <p className="text-xs text-destructive">{error}</p>
+      )}
     </Card>
   );
 }
@@ -259,30 +351,35 @@ export default function ChannelPage() {
   const [content, setContent] = useState("");
   const [sending, setSending] = useState(false);
 
+  /* ---- Approvals ---- */
+
   const [processingApprovalId, setProcessingApprovalId] = useState<
     string | null
   >(null);
 
   /*
-   * Approvals déjà traitées (autorisées / refusées). Elles restent
-   * "pending" dans la liste des messages tant que l'historique n'est
-   * pas rechargé : on les masque donc localement.
+   * Décisions prises (ici ou ailleurs), avec un instantané de l'approval :
+   * la carte reste affichée même quand le hook la retire de la liste live.
    */
-  const [resolvedApprovalIds, setResolvedApprovalIds] = useState<
-    string[]
-  >([]);
+  const [approvalDecisions, setApprovalDecisions] = useState<
+    Record<string, ApprovalDecision>
+  >({});
 
-  const markApprovalResolved = (approvalId: string) => {
-    setResolvedApprovalIds((previous) =>
-      previous.includes(approvalId)
-        ? previous
-        : [...previous, approvalId],
-    );
-  };
+  /* ---- Interactions ---- */
 
   /* Interaction reçue en temps réel (SSE / WebSocket). */
   const [pendingInteraction, setPendingInteraction] =
     useState<ActiveInteraction | null>(null);
+
+  /* Cartes reçues en temps réel, indexées par interactionKey. */
+  const [liveInteractions, setLiveInteractions] = useState<
+    Record<string, ActiveInteraction>
+  >({});
+
+  /* Réponses envoyées ici, indexées par interactionKey. */
+  const [answeredInteractions, setAnsweredInteractions] = useState<
+    Record<string, string>
+  >({});
 
   const [processingInteraction, setProcessingInteraction] =
     useState(false);
@@ -291,27 +388,11 @@ export default function ChannelPage() {
     string | null
   >(null);
 
-  /*
-   * Interactions reçues en temps réel (par runId). Elles s'affichent
-   * même si le message correspondant n'est pas (encore) porteur de
-   * `interaction` dans la liste des messages.
-   */
-  const [liveInteractions, setLiveInteractions] = useState<
-    Record<string, UserInteraction>
-  >({});
+  /* ---------------------------------------------------------------------- */
+  /*  Données dérivées                                                      */
+  /* ---------------------------------------------------------------------- */
 
-  /*
-   * Interactions déjà répondues, avec la réponse choisie.
-   * Sert à :
-   *  - masquer la carte même si le message est encore "pending"
-   *    dans l'état local / en base,
-   *  - afficher la réponse de l'utilisateur dans la conversation.
-   */
-  const [answeredInteractions, setAnsweredInteractions] = useState<
-    Record<string, { value: string; label: string }>
-  >({});
-
-  const isAnswered = (runId: string) => runId in answeredInteractions;
+  const isAnswered = (key: string) => key in answeredInteractions;
 
   /* Sécurité : un même message ne doit jamais apparaître deux fois. */
   const messages = rawMessages.filter(
@@ -319,15 +400,15 @@ export default function ChannelPage() {
       rawMessages.findIndex((other) => other.id === message.id) === index,
   );
 
+  /* ---- Interactions portées par les messages ---- */
+
   /*
-   * Une interaction (runId) ne doit produire qu'une seule carte, même si
+   * Une interaction ne doit produire qu'une seule carte, même si
    * plusieurs messages la portent (doublon SSE + base, etc.).
-   * On garde le premier message comme propriétaire de la carte.
+   * Le premier message est propriétaire de la carte.
    */
-  const interactionInfo: Record<
-    string,
-    { ownerId: string; answeredInDb: boolean }
-  > = {};
+  const interactionInfo: Record<string, InteractionInfo> = {};
+  const messageInteractionKeys: string[] = [];
 
   for (const message of messages) {
     const item = message.interaction;
@@ -336,19 +417,28 @@ export default function ChannelPage() {
       continue;
     }
 
-    const existing = interactionInfo[item.runId];
-    const answeredInDb = item.status !== "pending";
+    const questionKey = interactionKey(item.runId, item.question);
+    const key = message.interactionId ?? questionKey;
+    const status = toInteractionStatus(item.status);
+    const answer = getInteractionAnswer(item);
 
-    if (existing) {
-      existing.answeredInDb = existing.answeredInDb || answeredInDb;
-    } else {
-      interactionInfo[item.runId] = { ownerId: message.id, answeredInDb };
+    messageInteractionKeys.push(questionKey);
+
+    const existing = interactionInfo[key];
+
+    if (!existing) {
+      interactionInfo[key] = { ownerId: message.id, status, answer };
+    } else if (existing.status === "pending" && status !== "pending") {
+      existing.status = status;
+      existing.answer = answer ?? existing.answer;
+    } else if (existing.answer === null && answer !== null) {
+      existing.answer = answer;
     }
   }
 
   /* Cartes reçues en temps réel pas encore portées par un message. */
   const liveCards = Object.entries(liveInteractions).filter(
-    ([runId]) => !interactionInfo[runId],
+    ([key]) => !messageInteractionKeys.includes(key),
   );
 
   /* Bulles de l'agent qui répètent la question d'une carte live. */
@@ -360,7 +450,7 @@ export default function ChannelPage() {
 
       if (
         candidate.role !== "user" &&
-        candidate.content.trim() === live.question.trim()
+        candidate.content.trim() === live.interaction.question.trim()
       ) {
         hiddenBubbleIds.push(candidate.id);
         break;
@@ -368,27 +458,25 @@ export default function ChannelPage() {
     }
   }
 
-  /* ---------------------------------------------------------------------- */
-  /*  Données dérivées                                                      */
-  /* ---------------------------------------------------------------------- */
-
-  /*
-   * Dernière interaction encore pending dans l'historique
-   * (restaurée depuis PostgreSQL), hors interactions déjà répondues.
-   */
+  /* Dernière interaction encore en attente (historique). */
   let persistedInteraction: ActiveInteraction | null = null;
 
   for (let i = messages.length - 1; i >= 0; i--) {
-    const interaction = messages[i].interaction;
+    const item = messages[i].interaction;
+
+    if (!item) {
+      continue;
+    }
+
+    const key = messages[i].interactionId ?? interactionKey(item.runId, item.question);
 
     if (
-      interaction &&
-      interaction.status === "pending" &&
-      !isAnswered(interaction.runId)
+      interactionInfo[key]?.status === "pending" &&
+      !isAnswered(interactionKey(item.runId, item.question))
     ) {
       persistedInteraction = {
-        interaction: toUserInteraction(interaction),
-        runId: interaction.runId,
+        interaction: toUserInteraction(item),
+        runId: item.runId,
       };
 
       break;
@@ -398,33 +486,49 @@ export default function ChannelPage() {
   /* L'interaction temps réel prend priorité sur celle de la base. */
   const activeInteraction = pendingInteraction ?? persistedInteraction;
 
-  /* Approvals persistées + approvals reçues en temps réel. */
-  const persistedApprovals: ApprovalView[] = [];
+  /* ---- Approvals ---- */
+
+  const getApprovalStatus = (
+    approvalId: string,
+    dbStatus?: string,
+  ): ApprovalStatus => {
+    const decision = approvalDecisions[approvalId]?.status;
+
+    if (decision === "approved" || decision === "rejected") {
+      return decision;
+    }
+
+    if (dbStatus === "approved") return "approved";
+    if (dbStatus === "rejected") return "rejected";
+
+    return decision ?? "pending";
+  };
+
+  /*
+   * Une approval ne doit produire qu'une seule carte, même si plusieurs
+   * messages y font référence : le premier message en est propriétaire.
+   */
+  const approvalOwner: Record<string, string> = {};
 
   for (const message of messages) {
-    if (
-      message.approval &&
-      message.approval.status === "pending" &&
-      !resolvedApprovalIds.includes(message.approval.id)
-    ) {
-      persistedApprovals.push(message.approval);
+    const id = message.approval?.id ?? message.approvalId;
+
+    if (id && !(id in approvalOwner)) {
+      approvalOwner[id] = message.id;
     }
   }
 
-  const displayedApprovals: ApprovalView[] = [
-    ...persistedApprovals,
-    ...approvals.filter(
-      (approval) =>
-        !resolvedApprovalIds.includes(approval.id) &&
-        !persistedApprovals.some((p) => p.id === approval.id),
-    ),
-  ];
+  /* Approvals connues hors historique : temps réel + instantanés. */
+  const knownApprovals: ApprovalView[] = [...approvals];
 
-  /*
-   * Approvals reçues en temps réel qu'aucun message ne porte (encore) :
-   * on les affiche à la fin de la conversation.
-   */
-  const orphanApprovals = displayedApprovals.filter(
+  for (const decision of Object.values(approvalDecisions)) {
+    if (!knownApprovals.some((item) => item.id === decision.approval.id)) {
+      knownApprovals.push(decision.approval);
+    }
+  }
+
+  /* Approvals qu'aucun message ne porte (encore) : affichées à la fin. */
+  const orphanApprovals = knownApprovals.filter(
     (approval) =>
       !messages.some(
         (message) =>
@@ -432,6 +536,33 @@ export default function ChannelPage() {
           message.approval?.id === approval.id,
       ),
   );
+
+  /* Nombre d'approvals encore en attente (pour le statut d'exécution). */
+  let pendingApprovalCount = 0;
+
+  const countedApprovalIds: string[] = [];
+
+  for (const message of messages) {
+    if (message.approval) {
+      countedApprovalIds.push(message.approval.id);
+
+      if (
+        getApprovalStatus(message.approval.id, message.approval.status) ===
+        "pending"
+      ) {
+        pendingApprovalCount++;
+      }
+    }
+  }
+
+  for (const approval of knownApprovals) {
+    if (
+      !countedApprovalIds.includes(approval.id) &&
+      getApprovalStatus(approval.id) === "pending"
+    ) {
+      pendingApprovalCount++;
+    }
+  }
 
   /* ---------------------------------------------------------------------- */
   /*  Événements temps réel                                                 */
@@ -452,10 +583,13 @@ export default function ChannelPage() {
       }
 
       /*
-       * Le message référence une interaction mais ne l'embarque pas :
-       * on recharge l'historique pour récupérer la version complète.
+       * Le message référence une interaction / approval mais ne l'embarque
+       * pas : on recharge l'historique pour récupérer la version complète.
        */
-      if (message.interactionId && !message.interaction) {
+      if (
+        (message.interactionId && !message.interaction) ||
+        (message.approvalId && !message.approval)
+      ) {
         void refresh();
       }
     },
@@ -468,7 +602,10 @@ export default function ChannelPage() {
 
       setLiveInteractions((previous) => ({
         ...previous,
-        [runId]: interaction,
+        [interactionKey(runId, interaction.question)]: {
+          interaction,
+          runId,
+        },
       }));
 
       void refresh();
@@ -489,19 +626,28 @@ export default function ChannelPage() {
   /* Approval traitée (ici ou dans un autre onglet) : on la retire. */
   const handleApprovalResolved = useCallback(
     (...args: Parameters<typeof removeApproval>) => {
-      removeApproval(...args);
-
       const resolved: unknown = args[0];
 
       if (typeof resolved === "string") {
-        setResolvedApprovalIds((previous) =>
-          previous.includes(resolved) ? previous : [...previous, resolved],
-        );
+        const known = approvals.find((item) => item.id === resolved);
+
+        if (known) {
+          setApprovalDecisions((previous) =>
+            previous[resolved]
+              ? previous
+              : {
+                  ...previous,
+                  [resolved]: { status: "resolved", approval: known },
+                },
+          );
+        }
       }
+
+      removeApproval(...args);
 
       void refresh();
     },
-    [removeApproval, refresh],
+    [approvals, removeApproval, refresh],
   );
 
   const { connected, runtimeStatus } = useChannelEvents(channelId, {
@@ -536,51 +682,48 @@ export default function ChannelPage() {
     }
   };
 
-  const handleApprove = async (approvalId: string) => {
+  const handleDecision = async (
+    approval: ApprovalView,
+    decision: "approved" | "rejected",
+  ) => {
     if (processingApprovalId) {
       return;
     }
 
-    setProcessingApprovalId(approvalId);
+    setProcessingApprovalId(approval.id);
 
     try {
-      await approve(approvalId);
-      markApprovalResolved(approvalId);
+      if (decision === "approved") {
+        await approve(approval.id);
+      } else {
+        await reject(approval.id);
+      }
+
+      setApprovalDecisions((previous) => ({
+        ...previous,
+        [approval.id]: { status: decision, approval },
+      }));
+
+      void refresh();
     } catch (error) {
-      console.error("[APPROVAL] Failed to approve:", error);
-    } finally {
-      setProcessingApprovalId(null);
-    }
-  };
-
-  const handleReject = async (approvalId: string) => {
-    if (processingApprovalId) {
-      return;
-    }
-
-    setProcessingApprovalId(approvalId);
-
-    try {
-      await reject(approvalId);
-      markApprovalResolved(approvalId);
-    } catch (error) {
-      console.error("[APPROVAL] Failed to reject:", error);
+      console.error(`[APPROVAL] Failed to ${decision}:`, error);
     } finally {
       setProcessingApprovalId(null);
     }
   };
 
   /*
-   * La réponse est envoyée pour l'interaction qui a été cliquée (runId),
-   * pas forcément pour activeInteraction : ça évite d'envoyer la réponse
-   * au mauvais run s'il y a plusieurs interactions dans l'historique.
+   * La réponse est envoyée pour l'interaction cliquée (runId + question),
+   * pas forcément pour activeInteraction.
    */
   const handleInteractionAnswer = async (
     runId: string,
+    question: string,
     answer: string,
-    label: string,
   ) => {
-    if (processingInteraction || isAnswered(runId)) {
+    const key = interactionKey(runId, question);
+
+    if (processingInteraction || isAnswered(key)) {
       return;
     }
 
@@ -592,18 +735,21 @@ export default function ChannelPage() {
 
       setAnsweredInteractions((previous) => ({
         ...previous,
-        [runId]: { value: answer, label },
+        [key]: answer,
       }));
 
       setPendingInteraction((current) =>
-        current?.runId === runId ? null : current,
+        current &&
+        interactionKey(current.runId, current.interaction.question) === key
+          ? null
+          : current,
       );
+
+      void refresh();
     } catch (error) {
       console.error("[INTERACTION] Failed to send answer:", error);
 
-      setInteractionError(
-        "Impossible d'envoyer la réponse. Réessayez.",
-      );
+      setInteractionError("Impossible d'envoyer la réponse. Réessayez.");
     } finally {
       setProcessingInteraction(false);
     }
@@ -613,7 +759,7 @@ export default function ChannelPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const scrollSignal =
-    messages.length + displayedApprovals.length + liveCards.length;
+    messages.length + knownApprovals.length + liveCards.length;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({
@@ -702,7 +848,7 @@ export default function ChannelPage() {
 
           {!messagesLoading &&
             messages.length === 0 &&
-            displayedApprovals.length === 0 &&
+            knownApprovals.length === 0 &&
             !activeInteraction && (
               <div className="py-24 text-center">
                 <p className="text-sm font-medium">Aucun message</p>
@@ -717,44 +863,52 @@ export default function ChannelPage() {
           {messages.map((message) => {
             const isUser = message.role === "user";
 
-            /* Approval */
-            const messageApproval =
-              message.approval &&
-              message.approval.status === "pending" &&
-              !resolvedApprovalIds.includes(message.approval.id)
-                ? message.approval
-                : null;
+            /* Approval : base d'abord, sinon temps réel / instantané. */
+            const approval: ApprovalView | null =
+              message.approval ??
+              knownApprovals.find(
+                (item) => item.id === message.approvalId,
+              ) ??
+              null;
 
-            const liveApproval = messageApproval
-              ? null
-              : displayedApprovals.find(
-                  (item) => item.id === message.approvalId,
-                );
+            const approvalStatus = approval
+              ? getApprovalStatus(approval.id, message.approval?.status)
+              : "pending";
 
-            const approval = messageApproval ?? liveApproval ?? null;
-
-            const processingApproval = approval
-              ? processingApprovalId === approval.id
-              : false;
+            /* Une seule carte par approval. */
+            const isApprovalOwner =
+              !!approval && approvalOwner[approval.id] === message.id;
 
             /* Interaction */
             const interaction = message.interaction ?? null;
 
-            const localAnswer = interaction
-              ? answeredInteractions[interaction.runId]
-              : undefined;
+            const questionKey = interaction
+              ? interactionKey(interaction.runId, interaction.question)
+              : null;
 
             const info = interaction
-              ? interactionInfo[interaction.runId]
+              ? interactionInfo[
+                  message.interactionId ?? (questionKey as string)
+                ]
               : undefined;
 
             /* Une seule carte par interaction. */
             const isCardOwner = !!info && info.ownerId === message.id;
 
-            /* Répondue : localement, ou déjà marquée côté base. */
-            const answered =
-              !!interaction &&
-              (!!info?.answeredInDb || localAnswer !== undefined);
+            const localAnswer =
+              questionKey !== null
+                ? answeredInteractions[questionKey]
+                : undefined;
+
+            /* Statut : la base fait foi, sinon la réponse envoyée ici. */
+            const cardStatus: InteractionStatus =
+              info && info.status !== "pending"
+                ? info.status
+                : localAnswer !== undefined
+                  ? "answered"
+                  : "pending";
+
+            const cardAnswer = info?.answer ?? localAnswer ?? null;
 
             /*
              * On masque le texte uniquement si c'est le message qui porte
@@ -783,35 +937,35 @@ export default function ChannelPage() {
                     </div>
                   ))}
 
-                {approval && (
+                {approval && isApprovalOwner && (
                   <ApprovalCard
                     approval={approval}
-                    processing={processingApproval}
+                    status={approvalStatus}
+                    processing={processingApprovalId === approval.id}
                     disabled={processingApprovalId !== null}
-                    onApprove={() => void handleApprove(approval.id)}
-                    onReject={() => void handleReject(approval.id)}
+                    onApprove={() =>
+                      void handleDecision(approval, "approved")
+                    }
+                    onReject={() =>
+                      void handleDecision(approval, "rejected")
+                    }
                   />
                 )}
 
                 {interaction && isCardOwner && (
                   <InteractionCard
                     interaction={toUserInteraction(interaction)}
-                    answered={answered}
-                    selectedValue={localAnswer?.value}
+                    status={cardStatus}
+                    answer={cardAnswer}
                     processing={processingInteraction}
-                    error={answered ? null : interactionError}
-                    onAnswer={(answer) => {
-                      const label =
-                        interaction.options?.find(
-                          (option) => option.value === answer,
-                        )?.label ?? answer;
-
+                    error={interactionError}
+                    onAnswer={(answer) =>
                       void handleInteractionAnswer(
                         interaction.runId,
+                        interaction.question,
                         answer,
-                        label,
-                      );
-                    }}
+                      )
+                    }
                   />
                 )}
               </div>
@@ -819,21 +973,21 @@ export default function ChannelPage() {
           })}
 
           {/* Interactions reçues en temps réel, pas encore dans l'historique */}
-          {liveCards.map(([runId, live]) => (
+          {liveCards.map(([key, live]) => (
             <InteractionCard
-              key={runId}
-              interaction={live}
-              answered={isAnswered(runId)}
-              selectedValue={answeredInteractions[runId]?.value}
+              key={key}
+              interaction={live.interaction}
+              status={isAnswered(key) ? "answered" : "pending"}
+              answer={answeredInteractions[key] ?? null}
               processing={processingInteraction}
-              error={isAnswered(runId) ? null : interactionError}
-              onAnswer={(answer) => {
-                const label =
-                  live.options?.find((option) => option.value === answer)
-                    ?.label ?? answer;
-
-                void handleInteractionAnswer(runId, answer, label);
-              }}
+              error={interactionError}
+              onAnswer={(answer) =>
+                void handleInteractionAnswer(
+                  live.runId,
+                  live.interaction.question,
+                  answer,
+                )
+              }
             />
           ))}
 
@@ -842,16 +996,17 @@ export default function ChannelPage() {
             <ApprovalCard
               key={approval.id}
               approval={approval}
+              status={getApprovalStatus(approval.id)}
               processing={processingApprovalId === approval.id}
               disabled={processingApprovalId !== null}
-              onApprove={() => void handleApprove(approval.id)}
-              onReject={() => void handleReject(approval.id)}
+              onApprove={() => void handleDecision(approval, "approved")}
+              onReject={() => void handleDecision(approval, "rejected")}
             />
           ))}
 
           {/* Runtime status */}
           {runtimeStatus &&
-            displayedApprovals.length === 0 &&
+            pendingApprovalCount === 0 &&
             !activeInteraction && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="size-3.5 animate-spin" />
