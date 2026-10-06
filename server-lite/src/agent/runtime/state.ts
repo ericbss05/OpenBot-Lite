@@ -1,3 +1,4 @@
+
 import type {
   Agent,
 } from "../agent";
@@ -25,7 +26,14 @@ export type RuntimeStatus =
   | "waiting"
   | "completed"
   | "failed"
+  | "limit_reached"
   | "cancelled";
+
+export interface PendingHumanControl {
+  toolCallId: string;
+  reason: string;
+  message: string;
+}
 
 export interface RuntimeState {
   runId: string;
@@ -42,15 +50,51 @@ export interface RuntimeState {
 
   maxTurns: number;
 
+  /**
+   * Approval currently waiting for a decision.
+   */
   pendingApprovalId?: string;
 
+  /**
+   * Tool call associated with the pending approval.
+   */
   pendingToolCall?: LLMToolCall;
 
+  /**
+   * User interaction currently waiting for an answer.
+   */
   pendingInteraction?: PendingUserInteraction;
 
+  /**
+   * Human intervention currently required.
+   *
+   * This is used by the computer-use runtime when
+   * the agent reaches a step that requires the user
+   * to take control of the desktop.
+   *
+   * Example:
+   *
+   * - login
+   * - MFA
+   * - CAPTCHA
+   * - biometric validation
+   * - private information
+   * - native system permission
+   */
+  pendingHumanControl?: PendingHumanControl;
+
+  /**
+   * Results produced by tools during the run.
+   */
   toolResults: ToolResult[];
 
+  /**
+   * Final agent result.
+   */
   result?: string;
 
+  /**
+   * Error produced by the runtime.
+   */
   error?: string;
 }

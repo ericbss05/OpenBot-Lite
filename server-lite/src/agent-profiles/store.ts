@@ -24,6 +24,7 @@ export type AgentProfile = {
   roleDescription: string | null;
   provider: string;
   model: string;
+  computerSandboxId: string | null;
   visibility: "public" | "private";
   endpoint: string | null;
   avatarPalette: number;
@@ -242,6 +243,8 @@ export function createAgentStore(
       provider: parsed.provider,
 
       model: parsed.model,
+
+      computerSandboxId: null,
 
       visibility:
         "private" as const,
@@ -488,6 +491,30 @@ export function createAgentStore(
       : null;
   }
 
+  async function setComputerSandboxId(
+    id: string,
+    sandboxId: string | null,
+  ): Promise<AgentProfile | null> {
+    const [row] =
+      await db
+        .update(agentProfiles)
+        .set({
+          computerSandboxId:
+            sandboxId,
+        })
+        .where(
+          eq(
+            agentProfiles.id,
+            id,
+          ),
+        )
+        .returning();
+
+    return row
+      ? mapRow(row)
+      : null;
+  }
+
   async function remove(
     id: string,
   ): Promise<boolean> {
@@ -632,6 +659,8 @@ export function createAgentStore(
               agent.model ??
               "gpt-6-luna",
 
+            computerSandboxId: null,
+
             visibility:
               agent.visibility,
 
@@ -657,6 +686,7 @@ export function createAgentStore(
     create,
     update,
     updateOwned,
+    setComputerSandboxId,
     delete: remove,
     deleteOwned,
     syncFromYaml,
@@ -710,6 +740,9 @@ function mapRow(
     provider: row.provider,
 
     model: row.model,
+
+    computerSandboxId:
+      row.computerSandboxId,
 
     visibility:
       row.visibility as

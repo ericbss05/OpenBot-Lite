@@ -1,29 +1,64 @@
-import type { LLMMessage } from "../agent/llm/provider";
-import type { AgentRuntime } from "../agent/runtime/runtime";
-import type { AuditStore } from "../gateway/audit";
-import type { WorkQueue } from "./queue";
+import type {
+  LLMMessage,
+} from "../agent/llm/provider";
+
+import type {
+  AgentRuntime,
+} from "../agent/runtime/runtime";
+
+import type {
+  AuditStore,
+} from "../gateway/audit";
+
+import type {
+  WorkQueue,
+} from "./queue";
+
 import {
   AgentConversation,
+  type ConversationResult,
   type ConversationState,
 } from "../agent/conversation";
-import type { LLMProvider } from "../agent/llm/provider";
-import type { ToolRegistry } from "../agent/tools/tools";
-import type { Agent } from "../agent/agent";
+
+import type {
+  LLMProvider,
+} from "../agent/llm/provider";
+
+import type {
+  ToolRegistry,
+} from "../agent/tools/tools";
+
+import type {
+  Agent,
+} from "../agent/agent";
+
 import type {
   AgentEventSink,
   RunContext,
 } from "../agent/events/events";
-import type { ConversationStore } from "../agent/conversation-store";
-import type { ApprovalStore } from "../agent/approvals/approvals";
-import { InteractionStore } from "../agent/interactions/postgres-store";
+
+import type {
+  ConversationStore,
+} from "../agent/conversation-store";
+
+import type {
+  ApprovalStore,
+} from "../agent/approvals/approvals";
+
+import {
+  InteractionStore,
+} from "../agent/interactions/postgres-store";
 
 export type TurnRunner =
   ReturnType<typeof createTurnRunner>;
 
 export function createTurnRunner(deps: {
   queue: WorkQueue;
+
   approvals: ApprovalStore;
+
   interactions: InteractionStore;
+
   channels: {
     getOwned(
       channelId: string,
@@ -42,24 +77,33 @@ export function createTurnRunner(deps: {
           | "user"
           | "assistant"
           | "system";
+
         content: string;
+
         interactionId: string | null;
+
         approvalId: string | null;
       }>
     >;
 
     appendMessage(input: {
       channelId: string;
+
       role:
         | "user"
         | "assistant"
         | "system";
+
       content: string;
+
       agentId?: string;
+
       interactionId?: string | null;
+
       approvalId?: string | null;
     }): Promise<{
       id: string;
+
       createdAt: Date;
     }>;
   };
@@ -67,6 +111,7 @@ export function createTurnRunner(deps: {
   audit: AuditStore;
 
   llm: LLMProvider;
+
   tools: ToolRegistry;
 
   getAgent(
@@ -83,7 +128,8 @@ export function createTurnRunner(deps: {
 
   pollMs?: number;
 }) {
-  const pollMs = deps.pollMs ?? 500;
+  const pollMs =
+    deps.pollMs ?? 500;
 
   console.log(
     "[TURN RUNNER] Created",
@@ -92,11 +138,448 @@ export function createTurnRunner(deps: {
         deps.events
           ? "defined"
           : "undefined",
+
       pollMs,
     },
   );
 
   let stopped = false;
+
+  // --------------------------------------------------
+  // Helpers
+  // --------------------------------------------------
+
+  function getChannelId(
+    state: ConversationState,
+  ): string {
+    const channelId =
+      state.context.channelId;
+
+    if (!channelId) {
+      throw new Error(
+        "Conversation context is missing channelId.",
+      );
+    }
+
+    return channelId;
+  }
+
+  function getAgentId(
+    state: ConversationState,
+  ): string {
+    return state.context.agentId;
+  }
+
+  async function saveCompletedResponse(
+    result: ConversationResult,
+    state: ConversationState,
+    options?: {
+      approvalId?: string | null;
+      interactionId?: string | null;
+    },
+  ) {
+    const reply =
+  "C'est fait. La tâche est terminée.";
+
+    if (!reply) {
+      throw new Error(
+        `Agent "${getAgentId(
+          state,
+        )}" completed without a response.`,
+      );
+    }
+
+    const channelId =
+      getChannelId(state);
+
+    const agentId =
+      getAgentId(state);
+
+    const message =
+      await deps.channels.appendMessage({
+        channelId,
+
+        role: "assistant",
+
+        content: reply,
+
+        agentId,
+
+        approvalId:
+          options?.approvalId ??
+          null,
+
+        interactionId:
+          options?.interactionId ??
+          null,
+      });
+
+    console.log(
+      "[TURN RUNNER] Assistant message saved",
+      {
+        id: message.id,
+
+        channelId,
+
+        agentId,
+
+        runId:
+          result.runId,
+
+        approvalId:
+          options?.approvalId ??
+          null,
+
+        interactionId:
+          options?.interactionId ??
+          null,
+      },
+    );
+
+    await deps.events?.emit({
+      type:
+        "message.created",
+
+      context:
+        state.context,
+
+      message: {
+        id:
+          message.id,
+
+        channelId,
+
+        role:
+          "assistant",
+
+        content:
+          reply,
+
+        agentId,
+
+        createdAt:
+          message.createdAt.toISOString(),
+      },
+    });
+
+    await deps.audit.record(
+      "channel.agent_replied",
+      state.context.actorId,
+      {
+        channelId,
+
+        agentId,
+
+        runId:
+          result.runId,
+      },
+    );
+
+    deps.conversationStore.delete(
+      result.runId,
+    );
+
+    return message;
+  }
+
+  async function persistWaitingState(
+    result: ConversationResult,
+  ) {
+    if (!result.state) {
+      throw new Error(
+        `Conversation "${result.runId}" is waiting but returned no state.`,
+      );
+    }
+
+    const state =
+      result.state;
+
+    const channelId =
+      getChannelId(state);
+
+    const agentId =
+      getAgentId(state);
+
+    // ------------------------------------------------
+    // User interaction
+    // ------------------------------------------------
+
+    if (
+      result.pendingInteraction
+    ) {
+      const interactionId =
+        crypto.randomUUID();
+
+      await deps.interactions.create({
+        id: interactionId,
+
+        runId:
+          result.runId,
+
+        toolCallId:
+          result.pendingInteraction
+            .toolCallId,
+
+        interaction:
+          result.pendingInteraction
+            .interaction,
+      });
+
+      await deps.channels.appendMessage({
+        channelId,
+
+        role: "assistant",
+
+        content:
+          result.pendingInteraction
+            .interaction.question,
+
+        agentId,
+
+        interactionId,
+      });
+
+      console.log(
+        "[TURN RUNNER] Interaction persisted",
+        {
+          interactionId,
+
+          runId:
+            result.runId,
+
+          channelId,
+        },
+      );
+    }
+
+    // ------------------------------------------------
+    // Approval
+    // ------------------------------------------------
+
+    if (
+      result.pendingApprovalId
+    ) {
+      await deps.channels.appendMessage({
+        channelId,
+
+        role: "assistant",
+
+        content:
+          "Approval required.",
+
+        agentId,
+
+        approvalId:
+          result.pendingApprovalId,
+      });
+
+      console.log(
+        "[TURN RUNNER] Approval message saved",
+        {
+          approvalId:
+            result.pendingApprovalId,
+
+          runId:
+            result.runId,
+
+          channelId,
+        },
+      );
+    }
+
+    // ------------------------------------------------
+    // Human control
+    // ------------------------------------------------
+
+    if (
+      result.pendingHumanControl
+    ) {
+      console.log(
+        "[TURN RUNNER] Human control required",
+        {
+          runId:
+            result.runId,
+
+          channelId,
+
+          agentId,
+
+          toolCallId:
+            result.pendingHumanControl
+              .toolCallId,
+
+          reason:
+            result.pendingHumanControl
+              .reason,
+
+          message:
+            result.pendingHumanControl
+              .message,
+        },
+      );
+    }
+
+    // ------------------------------------------------
+    // Store runtime state
+    // ------------------------------------------------
+
+    deps.conversationStore.set(
+      result.runId,
+      state,
+    );
+
+    console.log(
+      "[TURN RUNNER] Conversation state stored",
+      {
+        runId:
+          result.runId,
+
+        channelId,
+
+        agentId,
+
+        pendingApprovalId:
+          result.pendingApprovalId ??
+          null,
+
+        pendingInteraction:
+          result.pendingInteraction
+            ? "present"
+            : "none",
+
+        pendingHumanControl:
+          result.pendingHumanControl
+            ? "present"
+            : "none",
+      },
+    );
+
+    await deps.audit.record(
+      "channel.agent_waiting",
+      state.context.actorId,
+      {
+        channelId,
+
+        agentId,
+
+        runId:
+          result.runId,
+
+        pendingApprovalId:
+          result.pendingApprovalId ??
+          null,
+
+        pendingInteraction:
+          Boolean(
+            result.pendingInteraction,
+          ),
+
+        pendingHumanControl:
+          Boolean(
+            result.pendingHumanControl,
+          ),
+      },
+    );
+  }
+
+  async function handleConversationResult(
+    result: ConversationResult,
+    options?: {
+      approvalId?: string | null;
+      interactionId?: string | null;
+    },
+  ) {
+    // ------------------------------------------------
+    // Failed
+    // ------------------------------------------------
+
+    if (
+      result.status === "failed"
+    ) {
+      console.log(
+        "[TURN RUNNER] Conversation failed",
+        {
+          runId:
+            result.runId,
+
+          error:
+            result.error,
+        },
+      );
+
+      throw new Error(
+        result.error ??
+          "Agent conversation failed.",
+      );
+    }
+
+    // ------------------------------------------------
+    // Waiting
+    // ------------------------------------------------
+
+    if (
+      result.status === "waiting"
+    ) {
+      console.log(
+        "[TURN RUNNER] Conversation waiting",
+        {
+          runId:
+            result.runId,
+
+          pendingApprovalId:
+            result.pendingApprovalId ??
+            null,
+
+          pendingInteraction:
+            result.pendingInteraction
+              ? "present"
+              : "none",
+
+          pendingHumanControl:
+            result.pendingHumanControl
+              ? "present"
+              : "none",
+        },
+      );
+
+      await persistWaitingState(
+        result,
+      );
+
+      return result;
+    }
+
+    // ------------------------------------------------
+    // Completed
+    // ------------------------------------------------
+
+    if (
+      result.status !==
+      "completed"
+    ) {
+      throw new Error(
+        `Agent conversation ended with status "${result.status}".`,
+      );
+    }
+
+    if (!result.state) {
+      throw new Error(
+        `Conversation "${result.runId}" completed without state.`,
+      );
+    }
+
+    await saveCompletedResponse(
+      result,
+      result.state,
+      options,
+    );
+
+    return result;
+  }
+
+  // --------------------------------------------------
+  // Main channel turn
+  // --------------------------------------------------
 
   async function handleChannelTurn(
     payload: Record<string, unknown>,
@@ -108,23 +591,31 @@ export function createTurnRunner(deps: {
       },
     );
 
-    const channelId = String(
-      payload.channelId ?? "",
-    );
+    const channelId =
+      String(
+        payload.channelId ??
+          "",
+      );
 
-    const agentId = String(
-      payload.agentId ?? "",
-    );
+    const agentId =
+      String(
+        payload.agentId ??
+          "",
+      );
 
-    const actorId = String(
-      payload.actorId ?? "",
-    );
+    const actorId =
+      String(
+        payload.actorId ??
+          "",
+      );
 
     console.log(
       "[TURN RUNNER] Parsed payload",
       {
         channelId,
+
         agentId,
+
         actorId,
       },
     );
@@ -151,28 +642,11 @@ export function createTurnRunner(deps: {
     // Channel
     // --------------------------------------------------
 
-    console.log(
-      "[TURN RUNNER] Loading channel",
-      {
-        channelId,
-        actorId,
-      },
-    );
-
     const channel =
       await deps.channels.getOwned(
         channelId,
         actorId,
       );
-
-    console.log(
-      "[TURN RUNNER] Channel loaded",
-      {
-        found: Boolean(channel),
-        active:
-          channel?.active ?? null,
-      },
-    );
 
     if (!channel) {
       throw new Error(
@@ -190,14 +664,6 @@ export function createTurnRunner(deps: {
     // History
     // --------------------------------------------------
 
-    console.log(
-      "[TURN RUNNER] Loading history",
-      {
-        channelId,
-        limit: 40,
-      },
-    );
-
     const history =
       await deps.channels.history(
         channelId,
@@ -208,51 +674,45 @@ export function createTurnRunner(deps: {
       "[TURN RUNNER] History loaded",
       {
         channelId,
-        count: history.length,
+
+        count:
+          history.length,
       },
     );
 
-    if (history.length === 0) {
+    if (
+      history.length === 0
+    ) {
       throw new Error(
         `Channel "${channelId}" has no messages.`,
       );
     }
 
-    /*
-     * Les messages du channel utilisent :
-     *
-     * user | assistant | system
-     *
-     * Le runtime utilise :
-     *
-     * user | assistant | tool
-     *
-     * Les messages system sont gérés séparément
-     * par l'agent / LLM provider.
-     */
-    const messages: LLMMessage[] = [];
+    const messages:
+      LLMMessage[] = [];
 
-    for (const message of history) {
+    for (
+      const message of history
+    ) {
       if (
-        message.role === "user" ||
-        message.role === "assistant"
+        message.role ===
+          "user" ||
+        message.role ===
+          "assistant"
       ) {
         messages.push({
-          role: message.role,
-          content: message.content,
+          role:
+            message.role,
+
+          content:
+            message.content,
         });
       }
     }
 
-    console.log(
-      "[TURN RUNNER] LLM messages prepared",
-      {
-        channelId,
-        count: messages.length,
-      },
-    );
-
-    if (messages.length === 0) {
+    if (
+      messages.length === 0
+    ) {
       throw new Error(
         `Channel "${channelId}" has no usable messages.`,
       );
@@ -262,23 +722,10 @@ export function createTurnRunner(deps: {
     // Agent
     // --------------------------------------------------
 
-    console.log(
-      "[TURN RUNNER] Loading agent",
-      {
-        agentId,
-      },
-    );
-
     const agent =
-      await deps.getAgent(agentId);
-
-    console.log(
-      "[TURN RUNNER] Agent loaded",
-      {
-        found: Boolean(agent),
+      await deps.getAgent(
         agentId,
-      },
-    );
+      );
 
     if (!agent) {
       throw new Error(
@@ -290,462 +737,108 @@ export function createTurnRunner(deps: {
     // Runtime
     // --------------------------------------------------
 
-    console.log(
-      "[TURN RUNNER] Creating runtime",
-      {
-        actorId,
-      },
-    );
-
     const runtime =
-      deps.createRuntime(actorId);
-
-    console.log(
-      "[TURN RUNNER] Runtime created",
-      {
-        exists: Boolean(runtime),
-      },
-    );
-
-    console.log(
-      "[TURN RUNNER] Creating AgentConversation",
-      {
-        events:
-          deps.events
-            ? "defined"
-            : "undefined",
-      },
-    );
+      deps.createRuntime(
+        actorId,
+      );
 
     const conversation =
       new AgentConversation(
         deps.llm,
+
         deps.tools,
+
         runtime,
+
         deps.events,
       );
 
-    console.log(
-      "[TURN RUNNER] AgentConversation created",
-    );
+    const runContext:
+      RunContext = {
+        runId:
+          crypto.randomUUID(),
 
-    const runContext: RunContext = {
-      runId: crypto.randomUUID(),
-      channelId,
-      agentId,
-      actorId,
-    };
+        channelId,
 
-    console.log(
-      "[TURN RUNNER] RunContext created",
-      {
-        runId: runContext.runId,
-        channelId: runContext.channelId,
-        agentId: runContext.agentId,
-        actorId: runContext.actorId,
-      },
-    );
+        agentId,
 
-    // --------------------------------------------------
-    // Conversation
-    // --------------------------------------------------
+        actorId,
+      };
 
     console.log(
       "[TURN RUNNER] Starting conversation",
       {
-        runId: runContext.runId,
+        runId:
+          runContext.runId,
+
+        channelId,
+
+        agentId,
       },
     );
 
     const result =
       await conversation.run(
         agent,
+
         messages,
+
         runContext,
       );
 
     console.log(
       "[TURN RUNNER] Conversation result",
       {
-        status: result.status,
-        runId: result.runId,
+        status:
+          result.status,
+
+        runId:
+          result.runId,
+
         content:
-          result.content ?? null,
+          result.content ??
+          null,
+
         error:
-          result.error ?? null,
+          result.error ??
+          null,
+
         pendingApprovalId:
           result.pendingApprovalId ??
           null,
+
+        pendingInteraction:
+          result.pendingInteraction
+            ? "present"
+            : "none",
+
+        pendingHumanControl:
+          result.pendingHumanControl
+            ? "present"
+            : "none",
       },
     );
 
-    // --------------------------------------------------
-    // Runtime failed
-    // --------------------------------------------------
-
-    if (result.status === "failed") {
-      console.log(
-        "[TURN RUNNER] Conversation failed",
-        {
-          runId: result.runId,
-          error: result.error,
-        },
-      );
-
-      throw new Error(
-        result.error ??
-          `Agent "${agentId}" conversation failed.`,
-      );
-    }
-
-    // --------------------------------------------------
-    // Runtime waiting for approval / interaction
-    // --------------------------------------------------
-
-    if (result.status === "waiting") {
-      console.log(
-        "[TURN RUNNER] Conversation waiting",
-        {
-          runId: result.runId,
-          pendingApprovalId:
-            result.pendingApprovalId ??
-            null,
-          pendingInteraction:
-            result.pendingInteraction
-              ? "present"
-              : "none",
-        },
-      );
-
-      /*
-       * On conserve l'ID créé afin de pouvoir
-       * relier le channel message à l'interaction
-       * persistée.
-       */
-      let interactionId:
-        | string
-        | null = null;
-
-      if (result.pendingInteraction) {
-        interactionId =
-          crypto.randomUUID();
-
-        await deps.interactions.create({
-          id: interactionId,
-          runId: result.runId,
-          toolCallId:
-            result.pendingInteraction
-              .toolCallId,
-          interaction:
-            result.pendingInteraction
-              .interaction,
-        });
-
-        console.log(
-          "[TURN RUNNER] Interaction persisted",
-          {
-            interactionId,
-            runId: result.runId,
-          },
-        );
-
-        /*
-         * Le message d'interaction fait partie de
-         * l'historique du channel et pointe vers
-         * l'entité interaction dédiée.
-         */
-        await deps.channels.appendMessage({
-          channelId,
-          role: "assistant",
-          content:
-            result.pendingInteraction
-              .interaction.question,
-          agentId,
-          interactionId,
-        });
-
-        console.log(
-          "[TURN RUNNER] Interaction message saved",
-          {
-            channelId,
-            interactionId,
-          },
-        );
-      }
-
-      /*
-       * Une approval possède déjà son ID dans
-       * pendingApprovalId.
-       *
-       * L'approval elle-même est créée plus bas
-       * dans le flux Gateway / ApprovalStore.
-       * Ici, on conserve uniquement la référence
-       * sur le message du channel si elle existe.
-       */
-      if (result.pendingApprovalId) {
-        await deps.channels.appendMessage({
-          channelId,
-          role: "assistant",
-          content:
-            "Approval required.",
-          agentId,
-          approvalId:
-            result.pendingApprovalId,
-        });
-
-        console.log(
-          "[TURN RUNNER] Approval message saved",
-          {
-            channelId,
-            approvalId:
-              result.pendingApprovalId,
-          },
-        );
-      }
-
-      if (!result.state) {
-        throw new Error(
-          `Conversation "${result.runId}" is waiting but returned no state.`,
-        );
-      }
-
-      /*
-       * IMPORTANT :
-       *
-       * Le work item va être terminé après le retour
-       * de cette fonction. La conversation ne doit donc
-       * pas être perdue.
-       *
-       * On conserve son état en mémoire afin que la route
-       * d'approbation ou d'interaction puisse reprendre
-       * exactement cette conversation plus tard.
-       */
-      deps.conversationStore.set(
-        result.runId,
-        result.state,
-      );
-
-      console.log(
-        "[TURN RUNNER] Conversation state stored",
-        {
-          runId: result.runId,
-          pendingApprovalId:
-            result.pendingApprovalId ??
-            null,
-          pendingInteraction:
-            result.pendingInteraction
-              ? "present"
-              : "none",
-        },
-      );
-
-      await deps.audit.record(
-        "channel.agent_waiting",
-        actorId,
-        {
-          channelId,
-          agentId,
-          runId: result.runId,
-          pendingApprovalId:
-            result.pendingApprovalId ??
-            null,
-        },
-      );
-
-      return;
-    }
-
-    // --------------------------------------------------
-    // Unexpected runtime status
-    // --------------------------------------------------
-
-    if (result.status !== "completed") {
-      console.log(
-        "[TURN RUNNER] Unexpected conversation status",
-        {
-          status: result.status,
-          runId: result.runId,
-        },
-      );
-
-      throw new Error(
-        `Agent conversation ended with status "${result.status}".`,
-      );
-    }
-
-    const reply =
-      result.content?.trim();
-
-    console.log(
-      "[TURN RUNNER] Reply extracted",
-      {
-        runId: result.runId,
-        hasReply: Boolean(reply),
-        length: reply?.length ?? 0,
-      },
-    );
-
-    if (!reply) {
-      throw new Error(
-        `Agent "${agentId}" completed without a response.`,
-      );
-    }
-
-    // --------------------------------------------------
-    // Save assistant response
-    // --------------------------------------------------
-
-    console.log(
-      "[TURN RUNNER] Saving assistant message",
-      {
-        channelId,
-        agentId,
-        contentLength: reply.length,
-      },
-    );
-
-    const message =
-      await deps.channels.appendMessage({
-        channelId,
-        role: "assistant",
-        content: reply,
-        agentId,
-      });
-
-    console.log(
-      "[TURN RUNNER] Message saved",
-      {
-        id: message.id,
-        createdAt: message.createdAt,
-        channelId,
-        agentId,
-      },
-    );
-
-    // --------------------------------------------------
-    // Emit message.created
-    // --------------------------------------------------
-
-    console.log(
-      "[TURN RUNNER] Preparing message.created",
-      {
-        eventSink:
-          deps.events
-            ? "defined"
-            : "undefined",
-        runId: runContext.runId,
-        channelId,
-        agentId,
-        messageId: message.id,
-      },
-    );
-
-    const messageCreatedEvent = {
-      type: "message.created" as const,
-      context: runContext,
-      message: {
-        id: message.id,
-        channelId,
-        role: "assistant" as const,
-        content: reply,
-        agentId,
-        createdAt:
-          message.createdAt.toISOString(),
-      },
-    };
-
-    console.log(
-      "[TURN RUNNER] message.created event built",
-      {
-        type:
-          messageCreatedEvent.type,
-        messageId:
-          messageCreatedEvent.message.id,
-        channelId:
-          messageCreatedEvent.message.channelId,
-      },
-    );
-
-    if (!deps.events) {
-      console.warn(
-        "[TURN RUNNER] No event sink available. message.created will NOT be emitted.",
-      );
-    } else {
-      console.log(
-        "[TURN RUNNER] Calling events.emit",
-        {
-          eventType:
-            messageCreatedEvent.type,
-        },
-      );
-
-      try {
-        await deps.events.emit(
-          messageCreatedEvent,
-        );
-
-        console.log(
-          "[TURN RUNNER] events.emit completed",
-          {
-            eventType:
-              messageCreatedEvent.type,
-          },
-        );
-      } catch (error) {
-        console.error(
-          "[TURN RUNNER] events.emit failed",
-          {
-            error,
-            eventType:
-              messageCreatedEvent.type,
-          },
-        );
-
-        throw error;
-      }
-    }
-
-    // --------------------------------------------------
-    // Audit
-    // --------------------------------------------------
-
-    console.log(
-      "[TURN RUNNER] Recording channel.agent_replied",
-      {
-        channelId,
-        agentId,
-        runId: result.runId,
-      },
-    );
-
-    await deps.audit.record(
-      "channel.agent_replied",
-      actorId,
-      {
-        channelId,
-        agentId,
-        runId: result.runId,
-      },
-    );
-
-    console.log(
-      "[TURN RUNNER] Channel turn completed",
-      {
-        channelId,
-        agentId,
-        runId: result.runId,
-      },
+    await handleConversationResult(
+      result,
     );
   }
 
+  // --------------------------------------------------
+  // Resume approval
+  // --------------------------------------------------
+
   async function resumeApproval(
     approvalId: string,
-    decision: "approved" | "rejected",
+    decision:
+      | "approved"
+      | "rejected",
   ) {
     console.log(
       "[TURN RUNNER] Resuming approval",
       {
         approvalId,
+
         decision,
       },
     );
@@ -761,7 +854,10 @@ export function createTurnRunner(deps: {
       );
     }
 
-    if (approval.status !== "pending") {
+    if (
+      approval.status !==
+      "pending"
+    ) {
       throw new Error(
         `Approval "${approvalId}" is already decided: ${approval.status}`,
       );
@@ -779,7 +875,8 @@ export function createTurnRunner(deps: {
     }
 
     if (
-      conversationState.runtimeState.pendingApprovalId !==
+      conversationState.runtimeState
+        .pendingApprovalId !==
       approvalId
     ) {
       throw new Error(
@@ -787,70 +884,81 @@ export function createTurnRunner(deps: {
       );
     }
 
-    console.log(
-      "[TURN RUNNER] Conversation state found",
-      {
-        runId: approval.runId,
-        channelId:
-          conversationState.context.channelId,
-        agentId:
-          conversationState.context.agentId,
-      },
-    );
-
     const runtime =
       deps.createRuntime(
-        conversationState.context.actorId,
+        conversationState.context
+          .actorId,
       );
 
     const conversation =
       new AgentConversation(
         deps.llm,
+
         deps.tools,
+
         runtime,
+
         deps.events,
       );
 
     const result =
       await conversation.resume(
         conversationState,
+
         decision,
       );
 
     console.log(
-      "[TURN RUNNER] Resumed conversation result",
+      "[TURN RUNNER] Resumed approval result",
       {
-        status: result.status,
-        runId: result.runId,
-        content:
-          result.content ?? null,
+        status:
+          result.status,
+
+        runId:
+          result.runId,
+
         error:
-          result.error ?? null,
+          result.error ??
+          null,
       },
     );
 
-    if (result.status === "failed") {
+    if (
+      result.status ===
+      "failed"
+    ) {
       deps.conversationStore.delete(
         result.runId,
       );
 
       await deps.audit.record(
         "channel.turn_failed",
-        conversationState.context.actorId,
+        conversationState.context
+          .actorId,
         {
           channelId:
-            conversationState.context.channelId,
+            conversationState.context
+              .channelId,
+
           agentId:
-            conversationState.context.agentId,
-          runId: result.runId,
+            conversationState.context
+              .agentId,
+
+          runId:
+            result.runId,
+
           approvalId,
+
           error:
             result.error ??
             "Conversation failed after approval decision.",
         },
       );
 
-      if (decision === "rejected") {
+      if (
+        decision ===
+        "rejected"
+      ) {
         return result;
       }
 
@@ -860,205 +968,42 @@ export function createTurnRunner(deps: {
       );
     }
 
-    if (result.status === "waiting") {
-      if (!result.state) {
-        throw new Error(
-          "Conversation is waiting again but returned no state.",
-        );
-      }
-
-      /*
-       * Le channelId est optionnel dans le contexte.
-       * On le vérifie une seule fois avant de
-       * l'utiliser pour les messages persistés.
-       */
-      const channelId =
-        conversationState.context.channelId;
-
-      if (!channelId) {
-        throw new Error(
-          "Conversation context is missing channelId.",
-        );
-      }
-
-      /*
-       * Si l'approval vient d'être résolue mais que
-       * l'agent attend maintenant une interaction,
-       * on crée cette nouvelle interaction et on la
-       * relie immédiatement au message du channel.
-       */
-      if (result.pendingInteraction) {
-        const interactionId =
-          crypto.randomUUID();
-
-        await deps.interactions.create({
-          id: interactionId,
-          runId: result.runId,
-          toolCallId:
-            result.pendingInteraction
-              .toolCallId,
-          interaction:
-            result.pendingInteraction
-              .interaction,
-        });
-
-        await deps.channels.appendMessage({
-          channelId,
-          role: "assistant",
-          content:
-            result.pendingInteraction
-              .interaction.question,
-          agentId:
-            conversationState.context
-              .agentId,
-          interactionId,
-        });
-
-        console.log(
-          "[TURN RUNNER] New interaction after approval saved",
-          {
-            interactionId,
-            runId: result.runId,
-          },
-        );
-      }
-
-      /*
-       * Si une nouvelle approval est demandée,
-       * son ID est déjà fourni par le runtime.
-       */
-      if (result.pendingApprovalId) {
-        await deps.channels.appendMessage({
-          channelId,
-          role: "assistant",
-          content:
-            "Approval required.",
-          agentId:
-            conversationState.context
-              .agentId,
-          approvalId:
-            result.pendingApprovalId,
-        });
-
-        console.log(
-          "[TURN RUNNER] New approval after approval saved",
-          {
-            approvalId:
-              result.pendingApprovalId,
-            runId: result.runId,
-          },
-        );
-      }
-
-      deps.conversationStore.set(
-        result.runId,
-        result.state,
-      );
-
-      await deps.audit.record(
-        "channel.agent_waiting",
-        conversationState.context.actorId,
-        {
-          channelId,
-          agentId:
-            conversationState.context.agentId,
-          runId: result.runId,
-          pendingApprovalId:
-            result.pendingApprovalId ??
-            null,
-        },
+    if (
+      result.status ===
+      "waiting"
+    ) {
+      await persistWaitingState(
+        result,
       );
 
       return result;
     }
 
-    if (result.status !== "completed") {
+    if (
+      result.status !==
+      "completed"
+    ) {
       throw new Error(
         `Unexpected conversation status: ${result.status}`,
       );
     }
 
-    const reply =
-      result.content?.trim();
+    await saveCompletedResponse(
+      result,
 
-    if (!reply) {
-      throw new Error(
-        `Agent "${conversationState.context.agentId}" completed without a response.`,
-      );
-    }
+      result.state,
 
-    const channelId =
-      conversationState.context.channelId;
-
-    if (!channelId) {
-      throw new Error(
-        "Conversation context is missing channelId.",
-      );
-    }
-
-    const agentId =
-      conversationState.context.agentId;
-
-    const message =
-      await deps.channels.appendMessage({
-        channelId,
-        role: "assistant",
-        content: reply,
-        agentId,
-        approvalId,
-      });
-
-    console.log(
-      "[TURN RUNNER] Resumed assistant message saved",
-      {
-        id: message.id,
-        channelId,
-        agentId,
-        approvalId,
-      },
-    );
-
-    await deps.events?.emit({
-      type: "message.created",
-      context:
-        conversationState.context,
-      message: {
-        id: message.id,
-        channelId,
-        role: "assistant",
-        content: reply,
-        agentId,
-        createdAt:
-          message.createdAt.toISOString(),
-      },
-    });
-
-    await deps.audit.record(
-      "channel.agent_replied",
-      conversationState.context.actorId,
-      {
-        channelId,
-        agentId,
-        runId: result.runId,
-      },
-    );
-
-    deps.conversationStore.delete(
-      result.runId,
-    );
-
-    console.log(
-      "[TURN RUNNER] Approval flow completed",
       {
         approvalId,
-        runId: result.runId,
-        channelId,
-        agentId,
       },
     );
 
     return result;
   }
+
+  // --------------------------------------------------
+  // Resume user interaction
+  // --------------------------------------------------
 
   async function resumeUserInteraction(
     runId: string,
@@ -1068,12 +1013,15 @@ export function createTurnRunner(deps: {
       "[TURN RUNNER] Resuming user interaction",
       {
         runId,
+
         answer,
       },
     );
 
     const conversationState =
-      deps.conversationStore.get(runId);
+      deps.conversationStore.get(
+        runId,
+      );
 
     if (!conversationState) {
       throw new Error(
@@ -1091,25 +1039,11 @@ export function createTurnRunner(deps: {
       );
     }
 
-    console.log(
-      "[TURN RUNNER] User interaction state found",
-      {
-        runId,
-        channelId:
-          conversationState.context.channelId,
-        agentId:
-          conversationState.context.agentId,
-        toolCallId:
-          pendingInteraction.toolCallId,
-        type:
-          pendingInteraction.interaction.type,
-      },
-    );
-
     const interaction =
-      await deps.interactions.getPendingByRunId(
-        runId,
-      );
+      await deps.interactions
+        .getPendingByRunId(
+          runId,
+        );
 
     if (!interaction) {
       throw new Error(
@@ -1119,49 +1053,67 @@ export function createTurnRunner(deps: {
 
     const runtime =
       deps.createRuntime(
-        conversationState.context.actorId,
+        conversationState.context
+          .actorId,
       );
 
     const conversation =
       new AgentConversation(
         deps.llm,
+
         deps.tools,
+
         runtime,
+
         deps.events,
       );
 
     const result =
       await conversation.resumeUserInteraction(
         conversationState,
+
         answer,
       );
 
     console.log(
       "[TURN RUNNER] Resumed user interaction result",
       {
-        status: result.status,
-        runId: result.runId,
-        content:
-          result.content ?? null,
+        status:
+          result.status,
+
+        runId:
+          result.runId,
+
         error:
-          result.error ?? null,
+          result.error ??
+          null,
       },
     );
 
-    if (result.status === "failed") {
+    if (
+      result.status ===
+      "failed"
+    ) {
       deps.conversationStore.delete(
         result.runId,
       );
 
       await deps.audit.record(
         "channel.turn_failed",
-        conversationState.context.actorId,
+        conversationState.context
+          .actorId,
         {
           channelId:
-            conversationState.context.channelId,
+            conversationState.context
+              .channelId,
+
           agentId:
-            conversationState.context.agentId,
-          runId: result.runId,
+            conversationState.context
+              .agentId,
+
+          runId:
+            result.runId,
+
           error:
             result.error ??
             "Conversation failed after user interaction.",
@@ -1176,195 +1128,36 @@ export function createTurnRunner(deps: {
 
     await deps.interactions.answer(
       interaction.id,
+
       answer,
     );
 
-    if (result.status === "waiting") {
-      if (!result.state) {
-        throw new Error(
-          "Conversation is waiting again but returned no state.",
-        );
-      }
-
-      const channelId =
-        conversationState.context.channelId;
-
-      if (!channelId) {
-        throw new Error(
-          "Conversation context is missing channelId.",
-        );
-      }
-
-      /*
-       * Si l'agent attend maintenant une nouvelle
-       * interaction, on la persiste et on la relie
-       * au nouveau message du channel.
-       */
-      if (result.pendingInteraction) {
-        const interactionId =
-          crypto.randomUUID();
-
-        await deps.interactions.create({
-          id: interactionId,
-          runId: result.runId,
-          toolCallId:
-            result.pendingInteraction
-              .toolCallId,
-          interaction:
-            result.pendingInteraction
-              .interaction,
-        });
-
-        await deps.channels.appendMessage({
-          channelId,
-          role: "assistant",
-          content:
-            result.pendingInteraction
-              .interaction.question,
-          agentId:
-            conversationState.context.agentId,
-          interactionId,
-        });
-
-        console.log(
-          "[TURN RUNNER] New interaction after approval saved",
-          {
-            interactionId,
-            runId: result.runId,
-          },
-        );
-      }
-
-      /*
-       * Si une nouvelle approval est demandée,
-       * son ID est déjà fourni par le runtime.
-       */
-      if (result.pendingApprovalId) {
-        await deps.channels.appendMessage({
-          channelId,
-          role: "assistant",
-          content: "Approval required.",
-          agentId:
-            conversationState.context.agentId,
-          approvalId:
-            result.pendingApprovalId,
-        });
-
-        console.log(
-          "[TURN RUNNER] New approval after approval saved",
-          {
-            approvalId:
-              result.pendingApprovalId,
-            runId: result.runId,
-          },
-        );
-      }
-
-      deps.conversationStore.set(
-        result.runId,
-        result.state,
-      );
-
-      await deps.audit.record(
-        "channel.agent_waiting",
-        conversationState.context.actorId,
-        {
-          channelId,
-          agentId:
-            conversationState.context.agentId,
-          runId: result.runId,
-          pendingApprovalId:
-            result.pendingApprovalId ??
-            null,
-        },
+    if (
+      result.status ===
+      "waiting"
+    ) {
+      await persistWaitingState(
+        result,
       );
 
       return result;
     }
 
-    if (result.status !== "completed") {
+    if (
+      result.status !==
+      "completed"
+    ) {
       throw new Error(
         `Unexpected conversation status: ${result.status}`,
       );
     }
 
-    const reply =
-      result.content?.trim();
+    await saveCompletedResponse(
+      result,
 
-    if (!reply) {
-      throw new Error(
-        `Agent "${conversationState.context.agentId}" completed without a response.`,
-      );
-    }
+      result.state,
 
-    const channelId =
-      conversationState.context.channelId;
-
-    if (!channelId) {
-      throw new Error(
-        "Conversation context is missing channelId.",
-      );
-    }
-
-    const agentId =
-      conversationState.context.agentId;
-
-    const message =
-      await deps.channels.appendMessage({
-        channelId,
-        role: "assistant",
-        content: reply,
-        agentId,
-        interactionId:
-          interaction.id,
-      });
-
-    console.log(
-      "[TURN RUNNER] Resumed assistant message saved",
       {
-        id: message.id,
-        channelId,
-        agentId,
-        interactionId:
-          interaction.id,
-      },
-    );
-
-    await deps.events?.emit({
-      type: "message.created",
-      context:
-        conversationState.context,
-      message: {
-        id: message.id,
-        channelId,
-        role: "assistant",
-        content: reply,
-        agentId,
-        createdAt:
-          message.createdAt.toISOString(),
-      },
-    });
-
-    await deps.audit.record(
-      "channel.agent_replied",
-      conversationState.context.actorId,
-      {
-        channelId,
-        agentId,
-        runId: result.runId,
-      },
-    );
-
-    deps.conversationStore.delete(
-      result.runId,
-    );
-
-    console.log(
-      "[TURN RUNNER] User interaction flow completed",
-      {
-        runId: result.runId,
-        channelId,
-        agentId,
         interactionId:
           interaction.id,
       },
@@ -1372,6 +1165,212 @@ export function createTurnRunner(deps: {
 
     return result;
   }
+
+  // --------------------------------------------------
+  // Resume human computer control
+  // --------------------------------------------------
+
+  async function resumeHumanControl(
+    runId: string,
+  ) {
+    console.log(
+      "[TURN RUNNER] Resuming human control",
+      {
+        runId,
+      },
+    );
+
+    const conversationState =
+      deps.conversationStore.get(
+        runId,
+      );
+
+    if (!conversationState) {
+      throw new Error(
+        `Conversation state not found for run "${runId}".`,
+      );
+    }
+
+    const pendingHumanControl =
+      conversationState.runtimeState
+        .pendingHumanControl;
+
+    if (
+      !pendingHumanControl
+    ) {
+      throw new Error(
+        `Conversation "${runId}" has no pending human control request.`,
+      );
+    }
+
+    if (
+      conversationState.runtimeState
+        .status !==
+      "waiting"
+    ) {
+      throw new Error(
+        `Conversation "${runId}" is not waiting for human control.`,
+      );
+    }
+
+    console.log(
+      "[TURN RUNNER] Human control request found",
+      {
+        runId,
+
+        channelId:
+          conversationState.context
+            .channelId,
+
+        agentId:
+          conversationState.context
+            .agentId,
+
+        toolCallId:
+          pendingHumanControl
+            .toolCallId,
+
+        reason:
+          pendingHumanControl
+            .reason,
+      },
+    );
+
+    const runtime =
+      deps.createRuntime(
+        conversationState.context
+          .actorId,
+      );
+
+    const conversation =
+      new AgentConversation(
+        deps.llm,
+
+        deps.tools,
+
+        runtime,
+
+        deps.events,
+      );
+
+    const result =
+      await conversation.resumeHumanControl(
+        conversationState,
+      );
+
+    console.log(
+      "[TURN RUNNER] Human control resumed",
+      {
+        status:
+          result.status,
+
+        runId:
+          result.runId,
+
+        error:
+          result.error ??
+          null,
+
+        pendingApprovalId:
+          result.pendingApprovalId ??
+          null,
+
+        pendingInteraction:
+          result.pendingInteraction
+            ? "present"
+            : "none",
+
+        pendingHumanControl:
+          result.pendingHumanControl
+            ? "present"
+            : "none",
+      },
+    );
+
+    if (
+      result.status ===
+      "failed"
+    ) {
+      deps.conversationStore.delete(
+        result.runId,
+      );
+
+      await deps.audit.record(
+        "channel.turn_failed",
+        conversationState.context
+          .actorId,
+        {
+          channelId:
+            conversationState.context
+              .channelId,
+
+          agentId:
+            conversationState.context
+              .agentId,
+
+          runId:
+            result.runId,
+
+          error:
+            result.error ??
+            "Conversation failed after human control.",
+        },
+      );
+
+      throw new Error(
+        result.error ??
+          "Conversation failed after human control.",
+      );
+    }
+
+    if (
+      result.status ===
+      "waiting"
+    ) {
+      await persistWaitingState(
+        result,
+      );
+
+      return result;
+    }
+
+    if (
+      result.status !==
+      "completed"
+    ) {
+      throw new Error(
+        `Unexpected conversation status after human control: ${result.status}`,
+      );
+    }
+
+    await saveCompletedResponse(
+      result,
+
+      result.state,
+    );
+
+    console.log(
+      "[TURN RUNNER] Human control flow completed",
+      {
+        runId:
+          result.runId,
+
+        channelId:
+          conversationState.context
+            .channelId,
+
+        agentId:
+          conversationState.context
+            .agentId,
+      },
+    );
+
+    return result;
+  }
+
+  // --------------------------------------------------
+  // Queue loop
+  // --------------------------------------------------
 
   async function loop() {
     console.log(
@@ -1391,7 +1390,8 @@ export function createTurnRunner(deps: {
         console.log(
           "[TURN RUNNER] Work item claimed",
           {
-            id: item.id,
+            id:
+              item.id,
           },
         );
 
@@ -1403,7 +1403,8 @@ export function createTurnRunner(deps: {
           console.log(
             "[TURN RUNNER] Completing work item",
             {
-              id: item.id,
+              id:
+                item.id,
             },
           );
 
@@ -1414,14 +1415,17 @@ export function createTurnRunner(deps: {
           console.log(
             "[TURN RUNNER] Work item completed",
             {
-              id: item.id,
+              id:
+                item.id,
             },
           );
         } catch (error) {
           console.error(
             "[TURN RUNNER] Work item failed",
             {
-              id: item.id,
+              id:
+                item.id,
+
               error,
             },
           );
@@ -1434,7 +1438,9 @@ export function createTurnRunner(deps: {
                 error instanceof Error
                   ? error.message
                   : String(error),
-              workId: item.id,
+
+              workId:
+                item.id,
             },
             "system",
           );
@@ -1446,13 +1452,16 @@ export function createTurnRunner(deps: {
           console.log(
             "[TURN RUNNER] Work item marked failed",
             {
-              id: item.id,
+              id:
+                item.id,
             },
           );
         }
       }
 
-      await Bun.sleep(pollMs);
+      await Bun.sleep(
+        pollMs,
+      );
     }
 
     console.log(
@@ -1478,6 +1487,10 @@ export function createTurnRunner(deps: {
     },
 
     resumeApproval,
+
     resumeUserInteraction,
+
+    resumeHumanControl,
   };
 }
+

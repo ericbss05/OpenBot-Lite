@@ -9,6 +9,9 @@ import {
 } from "./agent/tools/tools";
 import { calculatorTool } from "./agent/tools/internal/calculator";
 import { createSubAgentTool } from "./agent/tools/internal/create-sub-agent";
+import { createComputerTool } from "./agent/tools/internal/computer";
+
+import { ComputerSandboxStore } from "./agent/computer/sandbox-store";
 
 import { createAgentStore } from "./agent-profiles/store";
 import { createApp } from "./app";
@@ -53,8 +56,11 @@ import {
 const conversationStore =
   createConversationStore();
 
-  const interactionStore =
+const interactionStore =
   createPostgresInteractionStore(db);
+  
+  
+
 const config = loadConfig();
 
 // --------------------------------------------------
@@ -65,9 +71,12 @@ const approvals =
   createPostgresApprovalStore(db);
 
 const agents = createAgentStore(
+  
   db,
   config.ALLOW_PRIVATE_HOSTS,
 );
+
+const computer = new ComputerSandboxStore(agents);
 
 await agents.syncFromYaml("agents.yaml");
 
@@ -92,12 +101,23 @@ const llm =
 const tools =
   new ToolRegistry();
 
+const computerSandboxStore =
+  new ComputerSandboxStore(
+    agents,
+  );
+
 tools.register(
   calculatorTool,
 );
 
 tools.register(
   createSubAgentTool,
+);
+
+tools.register(
+  createComputerTool(
+    computerSandboxStore,
+  ),
 );
 
 const toolExecutor =
@@ -203,7 +223,6 @@ const turnRunner =
     createRuntime,
   });
 
-
 turnRunner.start();
 
 // --------------------------------------------------
@@ -244,18 +263,23 @@ const app =
     routines,
     plugins,
     approvals,
+    computer,
     tools: toolStore,
     agentTools: agentToolRoutes,
-    resumeApproval: turnRunner.resumeApproval,
+    resumeApproval:
+      turnRunner.resumeApproval,
     resumeUserInteraction:
-  turnRunner.resumeUserInteraction,
+      turnRunner.resumeUserInteraction,
+      resumeHumanControl:
+  turnRunner.resumeHumanControl,
   });
 
 // --------------------------------------------------
 // Server
 // --------------------------------------------------
 
-const port = config.PORT;
+const port =
+  config.PORT;
 
 console.log(
   `OpenBot Server Lite listening on http://127.0.0.1:${port}`,

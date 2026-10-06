@@ -78,15 +78,12 @@ export class OpenAIProvider
     ) {
       return {
         type: "tool_calls",
-
         calls:
           response.toolCalls.map(
             (call) => ({
               id: call.toolCallId,
-
               toolId:
                 call.toolName,
-
               arguments:
                 call.input as Record<
                   string,
@@ -160,13 +157,11 @@ function toAIMessage(
           toolName:
             message.toolName,
 
-          output: {
-            type:
-              "text" as const,
-
-            value:
+          output:
+            toToolOutput(
+              message.toolName,
               message.content,
-          },
+            ),
         },
       ],
     };
@@ -208,5 +203,51 @@ function toAIMessage(
 
     content:
       message.content,
+  };
+}
+
+function toToolOutput(
+  toolName: string,
+  content: string,
+) {
+  /*
+   * Computer screenshots are stored in RuntimeHistory
+   * as serialized JSON. Convert them back into a
+   * multimodal AI SDK tool result.
+   */
+  if (
+    toolName === "computer"
+  ) {
+    try {
+      const parsed =
+        JSON.parse(content) as {
+          action?: unknown;
+          screenshot?: unknown;
+        };
+
+      if (
+        parsed.action === "screenshot" &&
+        typeof parsed.screenshot ===
+          "string"
+      ) {
+        return {
+          type: "content" as const,
+          value: [
+            {
+  type: "image-data" as const,
+  data: parsed.screenshot,
+  mediaType: "image/png",
+},
+          ],
+        };
+      }
+    } catch {
+      // Fall back to regular text output.
+    }
+  }
+
+  return {
+    type: "text" as const,
+    value: content,
   };
 }

@@ -19,6 +19,7 @@ import type {
 
 import type {
   AgentRuntime,
+  RuntimeToolExecution,
 } from "./runtime/runtime";
 
 import type {
@@ -61,7 +62,107 @@ export interface ConversationResult {
 
   pendingInteraction?: RuntimeState["pendingInteraction"];
 
+  pendingHumanControl?: RuntimeState["pendingHumanControl"];
+
   state: ConversationState;
+}
+
+function createConversationState(
+  agent: Agent,
+  context: RunContext,
+  runtimeState: RuntimeState,
+): ConversationState {
+  return {
+    agent,
+    context,
+    history: runtimeState.messages,
+    runtimeState,
+  };
+}
+
+function createWaitingResult(
+  state: ConversationState,
+): ConversationResult {
+  return {
+    status: "waiting",
+
+    runId: state.context.runId,
+
+    pendingApprovalId:
+      state.runtimeState.pendingApprovalId,
+
+    pendingToolCall:
+      state.runtimeState.pendingToolCall,
+
+    pendingInteraction:
+      state.runtimeState.pendingInteraction,
+
+    pendingHumanControl:
+      state.runtimeState.pendingHumanControl,
+
+    state,
+  };
+}
+
+function createFailedResult(
+  state: ConversationState,
+): ConversationResult {
+  return {
+    status: "failed",
+
+    runId: state.context.runId,
+
+    error:
+      state.runtimeState.error ??
+      "Conversation failed.",
+
+    state,
+  };
+}
+
+function createCompletedResult(
+  state: ConversationState,
+): ConversationResult {
+  return {
+    status: "completed",
+
+    runId: state.context.runId,
+
+    content:
+      state.runtimeState.result,
+
+    state,
+  };
+}
+
+function isHumanControlRequestOutput(
+  output: unknown,
+): output is {
+  type: "human_control_requested";
+  reason: string;
+  message: string;
+} {
+  if (
+    typeof output !== "object" ||
+    output === null
+  ) {
+    return false;
+  }
+
+  const value =
+    output as Record<
+      string,
+      unknown
+    >;
+
+  return (
+    value.type ===
+      "human_control_requested" &&
+    typeof value.reason ===
+      "string" &&
+    typeof value.message ===
+      "string"
+  );
 }
 
 export class AgentConversation {
@@ -121,7 +222,8 @@ export class AgentConversation {
 
         turn: 0,
 
-        maxTurns: 1,
+        maxTurns:
+          this.maxTurns,
 
         toolResults: [],
       };
@@ -255,6 +357,127 @@ export class AgentConversation {
       state.context,
       history,
       runtimeState,
+    );
+  }
+
+  /**
+   * Reprend une conversation suspendue parce que
+   * l'utilisateur devait prendre le contrôle de l'ordinateur.
+   *
+   * Le RuntimeState contient déjà :
+   *
+   * - le runId ;
+   * - le contexte ;
+   * - l'agent ;
+   * - les messages ;
+   * - le pendingHumanControl ;
+   * - le sandbox E2B via l'état persistant de l'agent.
+   *
+   * On délègue donc directement au RuntimeLoop.
+   */
+  async resumeHumanControl(
+    state: ConversationState,
+  ): Promise<ConversationResult> {
+    if (
+      !state.runtimeState
+        .pendingHumanControl
+    ) {
+      throw new Error(
+        "Conversation has no pending human control request.",
+      );
+    }
+
+    if (
+      state.runtimeState.status !==
+      "waiting"
+    ) {
+      throw new Error(
+        `Cannot resume human control from runtime status "${state.runtimeState.status}".`,
+      );
+    }
+
+    console.log(
+      "[AGENT CONVERSATION] Resuming human control",
+      {
+        runId:
+          state.context.runId,
+
+        toolCallId:
+          state.runtimeState
+            .pendingHumanControl
+            .toolCallId,
+      },
+    );
+
+    const runtimeState =
+      await this.runtime.resumeHumanControl(
+        state.runtimeState,
+      );
+
+    const nextState =
+      createConversationState(
+        state.agent,
+        state.context,
+        runtimeState,
+      );
+
+    console.log(
+      "[AGENT CONVERSATION] Human control resumed",
+      {
+        runId:
+          state.context.runId,
+
+        status:
+          runtimeState.status,
+
+        turn:
+          runtimeState.turn,
+
+        pendingApprovalId:
+          runtimeState.pendingApprovalId ??
+          null,
+
+        pendingInteraction:
+          runtimeState.pendingInteraction
+            ? "present"
+            : "none",
+
+        pendingHumanControl:
+          runtimeState.pendingHumanControl
+            ? "present"
+            : "none",
+      },
+    );
+
+    if (
+      runtimeState.status ===
+      "completed"
+    ) {
+      return createCompletedResult(
+        nextState,
+      );
+    }
+
+    if (
+      runtimeState.status ===
+      "waiting"
+    ) {
+      return createWaitingResult(
+        nextState,
+      );
+    }
+
+    if (
+      runtimeState.status ===
+      "failed"
+    ) {
+      return createFailedResult(
+        nextState,
+      );
+    }
+
+    throw new Error(
+      `Unexpected runtime status after human control resume: ${runtimeState.status}`,
     );
   }
 
@@ -453,7 +676,8 @@ export class AgentConversation {
           },
         );
 
-        const execution =
+        const execution:
+          RuntimeToolExecution =
           await this.runtime.executeTool(
             context,
             call,
@@ -487,6 +711,109 @@ export class AgentConversation {
 
             pendingToolCall:
               call,
+
+            state: {
+              agent,
+
+              context,
+
+              history:
+                history.getMessages(),
+
+              runtimeState,
+            },
+          };
+        }
+
+        if (
+          execution.status ===
+          "human_control_requested"
+        ) {
+          if (
+            response.calls.length !==
+            1
+          ) {
+            throw new Error(
+              "A human control request must be the only tool call in an LLM response.",
+            );
+          }
+
+          if (
+            !execution.result
+          ) {
+            throw new Error(
+              "Human control request returned no result.",
+            );
+          }
+
+          const output =
+            execution.result.output;
+
+          if (
+            !isHumanControlRequestOutput(
+              output,
+            )
+          ) {
+            throw new Error(
+              "Invalid human control request result.",
+            );
+          }
+
+          history.addToolResult(
+            call.id,
+            call.toolId,
+            output,
+          );
+
+          runtimeState.status =
+            "waiting";
+
+          runtimeState.pendingHumanControl =
+            {
+              toolCallId:
+                call.id,
+
+              reason:
+                output.reason,
+
+              message:
+                output.message,
+            };
+
+          runtimeState.pendingApprovalId =
+            undefined;
+
+          runtimeState.pendingToolCall =
+            undefined;
+
+          runtimeState.messages =
+            history.getMessages();
+
+          await this.events?.emit({
+            type:
+              "computer.human_control.required",
+
+            context,
+
+            toolCallId:
+              call.id,
+
+            reason:
+              output.reason,
+
+            message:
+              output.message,
+          });
+
+          return {
+            status:
+              "waiting",
+
+            runId:
+              context.runId,
+
+            pendingHumanControl:
+              runtimeState.pendingHumanControl,
 
             state: {
               agent,
@@ -551,6 +878,9 @@ export class AgentConversation {
           content,
         );
       }
+
+      runtimeState.messages =
+        history.getMessages();
     }
 
     const error =

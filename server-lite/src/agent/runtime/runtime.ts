@@ -65,7 +65,8 @@ export interface RuntimeToolExecution {
   status:
     | "executed"
     | "approval_required"
-    | "denied";
+    | "denied"
+    | "human_control_requested";
 
   toolCall: LLMToolCall;
 
@@ -340,6 +341,9 @@ export class AgentRuntime {
       state.pendingApprovalId =
         undefined;
 
+      state.pendingToolCall =
+        undefined;
+
       state.status =
         "running";
 
@@ -363,6 +367,32 @@ export class AgentRuntime {
       throw new Error(
         "Approved tool unexpectedly requires another approval.",
       );
+    }
+
+    /**
+     * The approved tool may request human control.
+     *
+     * RuntimeLoop is responsible for populating
+     * state.pendingHumanControl and setting the
+     * runtime status to "waiting".
+     *
+     * We therefore preserve that state instead
+     * of treating it as an error.
+     */
+    if (
+      execution.status ===
+      "human_control_requested"
+    ) {
+      state.pendingApprovalId =
+        undefined;
+
+      state.pendingToolCall =
+        undefined;
+
+      state.status =
+        "waiting";
+
+      return state;
     }
 
     if (
@@ -405,7 +435,60 @@ export class AgentRuntime {
     state.status =
       "running";
 
-    return state;
+    return this.loop.run(
+      state,
+    );
+  }
+
+  /**
+   * Resume the runtime after a human has taken
+   * control of the E2B desktop and completed
+   * the blocking action.
+   *
+   * The same RuntimeState is reused, which means
+   * the same run and E2B sandbox can continue.
+   */
+  async resumeHumanControl(
+    state: RuntimeState,
+  ): Promise<RuntimeState> {
+    if (
+      state.status !==
+      "waiting"
+    ) {
+      throw new Error(
+        `Cannot resume human control from status: ${state.status}`,
+      );
+    }
+
+    if (
+      !state.pendingHumanControl
+    ) {
+      throw new Error(
+        "No pending human control.",
+      );
+    }
+
+    /**
+     * The computer tool already returned the
+     * human_control_requested result.
+     *
+     * The runtime was intentionally suspended.
+     *
+     * The user has now completed the blocking
+     * action in the same E2B environment.
+     *
+     * Clear the suspension marker and continue
+     * the existing runtime state.
+     */
+    state.pendingHumanControl =
+      undefined;
+
+    state.status =
+      "running";
+
+    return this.loop.run(
+      state,
+    );
   }
 
   /**
@@ -531,6 +614,10 @@ export class AgentRuntime {
     state.pendingInteraction =
       undefined;
 
+    state.pendingHumanControl =
+      undefined;
+
     return state;
   }
 }
+

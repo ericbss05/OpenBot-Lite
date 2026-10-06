@@ -18,46 +18,50 @@ export const agentProfiles = pgTable(
 
     title: text("title"),
 
-    roleDescription:
-      text("role_description"),
+    roleDescription: text("role_description"),
 
     provider: text("provider")
-  .notNull()
-  .default("openai"),
+      .notNull()
+      .default("openai"),
 
-model: text("model")
-  .notNull()
-  .default("gpt-6-luna"),
+    model: text("model")
+      .notNull()
+      .default("gpt-6-luna"),
 
-visibility: text("visibility", {
-  enum: ["public", "private"],
-}).notNull(),
+    computerSandboxId: text("computer_sandbox_id"),
 
-isPrimary: boolean("is_primary")
-  .notNull()
-  .default(true),
+    visibility: text("visibility", {
+      enum: ["public", "private"],
+    }).notNull(),
 
-endpoint: text("endpoint"),
+    isPrimary: boolean("is_primary")
+      .notNull()
+      .default(true),
 
-avatarPalette: integer("avatar_palette")
-  .notNull()
-  .default(0),
+    endpoint: text("endpoint"),
+
+    avatarPalette: integer("avatar_palette")
+      .notNull()
+      .default(0),
 
     avatarReversed: boolean("avatar_reversed")
       .notNull()
       .default(false),
 
-    ownerUserId: text("owner_user_id")
-      .references(() => user.id, {
+    ownerUserId: text("owner_user_id").references(
+      () => user.id,
+      {
         onDelete: "cascade",
-      }),
+      },
+    ),
 
     createdAt: timestamp("created_at")
       .defaultNow()
       .notNull(),
   },
   (table) => [
-    index("agent_profiles_owner_user_idx")
-      .on(table.ownerUserId),
+    index("agent_profiles_owner_user_idx").on(
+      table.ownerUserId,
+    ),
   ],
 );

@@ -161,6 +161,19 @@ export type AgentEvent =
     }
 
   // ─────────────────────────────────────────────
+  // Computer / Human-in-the-loop
+  // ─────────────────────────────────────────────
+
+  | {
+      type:
+        "computer.human_control.required";
+      context: RunContext;
+      toolCallId: string;
+      reason: string;
+      message: string;
+    }
+
+  // ─────────────────────────────────────────────
   // Agent / sub-agent
   // ─────────────────────────────────────────────
 
@@ -180,6 +193,13 @@ export type AgentEvent =
       type: "agent.failed";
       context: RunContext;
       error: string;
+    }
+
+  | {
+      type:
+        "agent.limit_reached";
+      context: RunContext;
+      maxTurns: number;
     }
 
   // ─────────────────────────────────────────────

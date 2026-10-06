@@ -30,6 +30,9 @@ import { createPluginRoutes } from "./routes/plugins";
 import { createRoutineRoutes } from "./routes/routines";
 import { createToolRoutes } from "./routes/tools";
 import { eventsRoute } from "./routes/events";
+import { createHumanControlRoutes } from "./routes/human-control";
+import type { ComputerSandboxStore } from "./agent/computer/sandbox-store";
+import { createDesktopRoutes } from "./routes/desktop";
 
 type Auth =
 ReturnType<typeof createAuthMiddleware>;
@@ -50,6 +53,7 @@ plugins: PluginStore;
 tools: ToolStore;
 
 approvals: ApprovalStore;
+computer: ComputerSandboxStore;
 
 resumeApproval: (
 approvalId: string,
@@ -59,6 +63,10 @@ decision: "approved" | "rejected",
 resumeUserInteraction: (
 runId: string,
 answer: string,
+) => Promise<unknown>;
+
+resumeHumanControl: (
+  runId: string,
 ) => Promise<unknown>;
 
 agentTools: ReturnType<typeof createAgentToolRoutes> ;
@@ -278,6 +286,25 @@ gateway: deps.gateway,
 app.get(
 "/api/channels/:channelId/events",
 eventsRoute,
+);
+
+// ============================================================
+// Human Computer Control
+// ============================================================
+
+app.route(
+  "/api/human-control",
+  createHumanControlRoutes({
+    resumeHumanControl:
+      deps.resumeHumanControl,
+  }),
+);
+
+app.route(
+  "/api/agents",
+  createDesktopRoutes({
+    computer: deps.computer,
+  }),
 );
 
 return app;

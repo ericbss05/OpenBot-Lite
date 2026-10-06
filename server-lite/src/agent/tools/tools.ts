@@ -1,5 +1,11 @@
 export type ToolInputSchema = Record<string, unknown>;
 
+export type ToolExecutionContext = {
+  agentId: string;
+  runId: string;
+  actorId: string;
+};
+
 export interface ToolDefinition {
   id: string;
   description: string;
@@ -12,6 +18,7 @@ export interface Tool {
 
   execute(
     arguments_: Record<string, unknown>,
+    context?: ToolExecutionContext,
   ): Promise<unknown>;
 }
 
@@ -62,7 +69,10 @@ export class ToolExecutor {
     private readonly registry: ToolRegistry,
   ) {}
 
-  async execute(call: ToolCall): Promise<ToolResult> {
+  async execute(
+    call: ToolCall,
+    context?: ToolExecutionContext,
+  ): Promise<ToolResult> {
     const tool = this.registry.get(call.toolId);
 
     if (!tool) {
@@ -75,7 +85,10 @@ export class ToolExecutor {
     }
 
     try {
-      const output = await tool.execute(call.arguments);
+      const output = await tool.execute(
+        call.arguments,
+        context,
+      );
 
       return {
         toolCallId: call.id,

@@ -7,7 +7,7 @@ import { Box, Plus, Search, Zap } from "lucide-react";
 
 import { NavMain } from "@/components/nav-main";
 import { NavUser } from "@/components/nav-user";
-import { useChannels } from "@/hooks/useChannels";
+import { useChannels } from "@/hooks/channel/useChannels";
 import { useAgents } from "@/hooks/useAgents";
 
 import {

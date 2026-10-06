@@ -217,9 +217,14 @@ export class GatewayExecutor {
     );
 
     const result =
-      await this.executor.execute(
-        toolCall,
-      );
+  await this.executor.execute(
+    toolCall,
+    {
+      agentId: context.botId,
+      runId: context.runId,
+      actorId: context.actorId,
+    },
+  );
 
     await this.audit.record(
       result.status === "success"
